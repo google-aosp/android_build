@@ -25,7 +25,6 @@ PRODUCT_PACKAGES += \
     BlockedNumberProvider \
     BookmarkProvider \
     Browser \
-    Snap \
     Calendar \
     CalendarProvider \
     CaptivePortalLogin \
