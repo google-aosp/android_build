@@ -42,6 +42,7 @@ PRODUCT_PACKAGES += \
     Keyguard \
     LatinIME \
     Launcher2 \
+    WallpaperPicker \
     ManagedProvisioning \
     MtpDocumentsProvider \
     PicoTts \
