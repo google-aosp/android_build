@@ -81,7 +81,7 @@ ifndef PLATFORM_VERSION
   # which is the version that we reveal to the end user.
   # Update this value when the platform version changes (rather
   # than overriding it somewhere else).  Can be an arbitrary string.
-  PLATFORM_VERSION := 7.1.1
+  PLATFORM_VERSION := o-preview-1
 endif
 
 ifndef PLATFORM_SDK_VERSION
