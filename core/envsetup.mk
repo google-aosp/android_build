@@ -11,8 +11,64 @@
 #         This can be useful if you set OUT_DIR to be a different directory
 #         than other outputs of your build system.
 
+# Returns all words in $1 up to and including $2
+define find_and_earlier
+  $(strip $(if $(1),
+    $(firstword $(1))
+    $(if $(filter $(firstword $(1)),$(2)),,
+      $(call find_and_earlier,$(wordlist 2,$(words $(1)),$(1)),$(2)))))
+endef
+
+#$(warning $(call find_and_earlier,A B C,A))
+#$(warning $(call find_and_earlier,A B C,B))
+#$(warning $(call find_and_earlier,A B C,C))
+#$(warning $(call find_and_earlier,A B C,D))
+
+define version-list
+$(1)PR1 $(1)PD1 $(1)PD2 $(1)PM1 $(1)PM2
+endef
+
+ALL_VERSIONS := O P Q R S T U V W X Y Z
+ALL_VERSIONS := $(foreach v,$(ALL_VERSIONS),$(call version-list,$(v)))
+
+# Filters ALL_VERSIONS down to the range [$1, $2], and errors if $1 > $2 or $3 is
+# not in [$1, $2]
+# $(1): min platform version
+# $(2): max platform version
+# $(3): default platform version
+define allowed-platform-versions
+$(strip \
+  $(if $(filter $(ALL_VERSIONS),$(1)),,
+    $(error Invalid MIN_PLATFORM_VERSION '$(1)'))
+  $(if $(filter $(ALL_VERSIONS),$(2)),,
+    $(error Invalid MAX_PLATFORM_VERSION '$(2)'))
+  $(if $(filter $(ALL_VERSIONS),$(3)),,
+    $(error Invalid DEFAULT_PLATFORM_VERSION '$(3)'))
+
+  $(eval allowed_versions_ := $(call find_and_earlier,$(ALL_VERSIONS),$(2)))
+
+  $(if $(filter $(allowed_versions_),$(1)),,
+    $(error MIN_PLATFORM_VERSION '$(1)' must be before MAX_PLATFORM_VERSION '$(2)'))
+
+  $(eval allowed_versions_ := $(1) \
+    $(filter-out $(call find_and_earlier,$(allowed_versions_),$(1)),$(allowed_versions_)))
+
+  $(if $(filter $(allowed_versions_),$(3)),,
+    $(error DEFAULT_PLATFORM_VERSION '$(3)' must be between MIN_PLATFORM_VERSION '$(1)' and MAX_PLATFORM_VERSION '$(2)'))
+
+  $(allowed_versions_))
+endef
+
+#$(warning $(call allowed-platform-versions,OPR1,PPR1,OPR1))
+#$(warning $(call allowed-platform-versions,OPM1,PPR1,OPR1))
+
 # Set up version information.
 include $(BUILD_SYSTEM)/version_defaults.mk
+
+ENABLED_VERSIONS := $(call find_and_earlier,$(ALL_VERSIONS),$(TARGET_PLATFORM_VERSION))
+
+$(foreach v,$(ENABLED_VERSIONS), \
+  $(eval IS_AT_LEAST_$(v) := true))
 
 # ---------------------------------------------------------------
 # If you update the build system such that the environment setup
@@ -20,7 +76,21 @@ include $(BUILD_SYSTEM)/version_defaults.mk
 # people who haven't re-run those will have to do so before they
 # can build.  Make sure to also update the corresponding value in
 # buildspec.mk.default and envsetup.sh.
-CORRECT_BUILD_ENV_SEQUENCE_NUMBER := 12
+CORRECT_BUILD_ENV_SEQUENCE_NUMBER := 13
+
+# ---------------------------------------------------------------
+# Whether we can expect a full build graph
+ALLOW_MISSING_DEPENDENCIES := $(filter true,$(ALLOW_MISSING_DEPENDENCIES))
+ifneq ($(TARGET_BUILD_APPS),)
+ALLOW_MISSING_DEPENDENCIES := true
+endif
+ifneq ($(filter true,$(SOONG_ALLOW_MISSING_DEPENDENCIES)),)
+ALLOW_MISSING_DEPENDENCIES := true
+endif
+ifneq ($(ONE_SHOT_MAKEFILE),)
+ALLOW_MISSING_DEPENDENCIES := true
+endif
+.KATI_READONLY := ALLOW_MISSING_DEPENDENCIES
 
 # ---------------------------------------------------------------
 # The product defaults to generic on hardware
@@ -112,6 +182,7 @@ HOST_PREBUILT_TAG := $(BUILD_OS)-$(HOST_PREBUILT_ARCH)
 TARGET_COPY_OUT_SYSTEM := system
 TARGET_COPY_OUT_SYSTEM_OTHER := system_other
 TARGET_COPY_OUT_DATA := data
+TARGET_COPY_OUT_ASAN := $(TARGET_COPY_OUT_DATA)/asan
 TARGET_COPY_OUT_OEM := oem
 TARGET_COPY_OUT_ODM := odm
 TARGET_COPY_OUT_ROOT := root
@@ -195,6 +266,13 @@ AB_OTA_UPDATER ?=
 ifeq ($(AB_OTA_UPDATER),true)
   ifneq ($(strip $(TARGET_RECOVERY_UPDATER_LIBS)),)
     $(error Do not use TARGET_RECOVERY_UPDATER_LIBS when using AB_OTA_UPDATER)
+  endif
+endif
+
+# Check BOARD_VNDK_VERSION
+ifdef BOARD_VNDK_VERSION
+  ifneq ($(BOARD_VNDK_VERSION),current)
+    $(error BOARD_VNDK_VERSION: Only "current" is implemented)
   endif
 endif
 
@@ -334,7 +412,7 @@ TARGET_OUT_COMMON_GEN := $(TARGET_COMMON_OUT_ROOT)/gen
 
 TARGET_OUT := $(PRODUCT_OUT)/$(TARGET_COPY_OUT_SYSTEM)
 ifneq ($(filter address,$(SANITIZE_TARGET)),)
-target_out_shared_libraries_base := $(PRODUCT_OUT)/$(TARGET_COPY_OUT_DATA)
+target_out_shared_libraries_base := $(PRODUCT_OUT)/$(TARGET_COPY_OUT_ASAN)/system
 else
 target_out_shared_libraries_base := $(TARGET_OUT)
 endif
@@ -414,7 +492,7 @@ TARGET_OUT_CACHE := $(PRODUCT_OUT)/cache
 
 TARGET_OUT_VENDOR := $(PRODUCT_OUT)/$(TARGET_COPY_OUT_VENDOR)
 ifneq ($(filter address,$(SANITIZE_TARGET)),)
-target_out_vendor_shared_libraries_base := $(PRODUCT_OUT)/$(TARGET_COPY_OUT_DATA)/vendor
+target_out_vendor_shared_libraries_base := $(PRODUCT_OUT)/$(TARGET_COPY_OUT_ASAN)/vendor
 else
 target_out_vendor_shared_libraries_base := $(TARGET_OUT_VENDOR)
 endif
@@ -426,6 +504,7 @@ TARGET_OUT_VENDOR_SHARED_LIBRARIES := $(target_out_vendor_shared_libraries_base)
 else
 TARGET_OUT_VENDOR_SHARED_LIBRARIES := $(target_out_vendor_shared_libraries_base)/lib
 endif
+TARGET_OUT_VENDOR_RENDERSCRIPT_BITCODE := $(TARGET_OUT_VENDOR_SHARED_LIBRARIES)
 TARGET_OUT_VENDOR_JAVA_LIBRARIES := $(TARGET_OUT_VENDOR)/framework
 TARGET_OUT_VENDOR_APPS := $(TARGET_OUT_VENDOR)/app
 TARGET_OUT_VENDOR_APPS_PRIVILEGED := $(TARGET_OUT_VENDOR)/priv-app
@@ -437,6 +516,7 @@ $(TARGET_2ND_ARCH_VAR_PREFIX)TARGET_OUT_VENDOR_SHARED_LIBRARIES := $(target_out_
 else
 $(TARGET_2ND_ARCH_VAR_PREFIX)TARGET_OUT_VENDOR_SHARED_LIBRARIES := $(target_out_vendor_shared_libraries_base)/lib
 endif
+$(TARGET_2ND_ARCH_VAR_PREFIX)TARGET_OUT_VENDOR_RENDERSCRIPT_BITCODE := $($(TARGET_2ND_ARCH_VAR_PREFIX)TARGET_OUT_VENDOR_SHARED_LIBRARIES)
 $(TARGET_2ND_ARCH_VAR_PREFIX)TARGET_OUT_VENDOR_APPS := $(TARGET_OUT_VENDOR_APPS)
 $(TARGET_2ND_ARCH_VAR_PREFIX)TARGET_OUT_VENDOR_APPS_PRIVILEGED := $(TARGET_OUT_VENDOR_APPS_PRIVILEGED)
 

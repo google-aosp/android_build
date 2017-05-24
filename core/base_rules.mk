@@ -65,6 +65,16 @@ else
   my_host_cross :=
 endif
 
+ifndef LOCAL_PROPRIETARY_MODULE
+  LOCAL_PROPRIETARY_MODULE := $(LOCAL_VENDOR_MODULE)
+endif
+ifndef LOCAL_VENDOR_MODULE
+  LOCAL_VENDOR_MODULE := $(LOCAL_PROPRIETARY_MODULE)
+endif
+ifneq ($(filter-out $(LOCAL_PROPRIETARY_MODULE),$(LOCAL_VENDOR_MODULE))$(filter-out $(LOCAL_VENDOR_MODULE),$(LOCAL_PROPRIETARY_MODULE)),)
+$(call pretty-error,Only one of LOCAL_PROPRIETARY_MODULE[$(LOCAL_PROPRIETARY_MODULE)] and LOCAL_VENDOR_MODULE[$(LOCAL_VENDOR_MODULE)] may be set, or they must be equal)
+endif
+
 include $(BUILD_SYSTEM)/local_vndk.mk
 
 my_module_tags := $(LOCAL_MODULE_TAGS)
@@ -166,7 +176,7 @@ my_module_relative_path := $(strip $(LOCAL_MODULE_RELATIVE_PATH))
 ifdef LOCAL_IS_HOST_MODULE
   partition_tag :=
 else
-ifeq (true,$(LOCAL_PROPRIETARY_MODULE))
+ifeq (true,$(LOCAL_VENDOR_MODULE))
   partition_tag := _VENDOR
 else ifeq (true,$(LOCAL_OEM_MODULE))
   partition_tag := _OEM
@@ -421,9 +431,27 @@ endif
 ###########################################################
 ifdef LOCAL_COMPATIBILITY_SUITE
 
+# If we are building a native test or benchmark and its stem variants are not defined,
+# separate the multiple architectures into subdirectories of the testcase folder.
+arch_dir :=
+is_native :=
+ifeq ($(LOCAL_MODULE_CLASS),NATIVE_TESTS)
+  is_native := true
+endif
+ifeq ($(LOCAL_MODULE_CLASS),NATIVE_BENCHMARK)
+  is_native := true
+endif
+ifdef LOCAL_MULTILIB
+  is_native := true
+endif
+ifdef is_native
+  arch_dir := /$($(my_prefix)$(LOCAL_2ND_ARCH_VAR_PREFIX)ARCH)
+  is_native :=
+endif
+
 # The module itself.
 $(foreach suite, $(LOCAL_COMPATIBILITY_SUITE), \
-  $(eval my_compat_dist_$(suite) := $(foreach dir, $(call compatibility_suite_dirs,$(suite)), \
+  $(eval my_compat_dist_$(suite) := $(foreach dir, $(call compatibility_suite_dirs,$(suite),$(arch_dir)), \
     $(LOCAL_BUILT_MODULE):$(dir)/$(my_installed_module_stem))))
 
 # Make sure we only add the files once for multilib modules.
@@ -450,6 +478,13 @@ ifneq (,$(wildcard $(LOCAL_PATH)/DynamicConfig.xml))
 $(foreach suite, $(LOCAL_COMPATIBILITY_SUITE), \
   $(eval my_compat_dist_$(suite) += $(foreach dir, $(call compatibility_suite_dirs,$(suite)), \
     $(LOCAL_PATH)/DynamicConfig.xml:$(dir)/$(LOCAL_MODULE).dynamic)))
+endif
+
+ifneq (,$(wildcard $(LOCAL_PATH)/$(LOCAL_MODULE)_*.config))
+$(foreach extra_config, $(wildcard $(LOCAL_PATH)/$(LOCAL_MODULE)_*.config), \
+  $(foreach suite, $(LOCAL_COMPATIBILITY_SUITE), \
+    $(eval my_compat_dist_$(suite) += $(foreach dir, $(call compatibility_suite_dirs,$(suite)), \
+      $(extra_config):$(dir)/$(notdir $(extra_config))))))
 endif
 endif # $(my_prefix)$(LOCAL_MODULE_CLASS)_$(LOCAL_MODULE)_compat_files
 

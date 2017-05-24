@@ -148,10 +148,24 @@ endif
 need_compile_java := $(strip $(all_java_sources)$(all_res_assets)$(java_resource_sources))$(LOCAL_STATIC_JAVA_LIBRARIES)$(filter true,$(LOCAL_SOURCE_FILES_ALL_GENERATED))
 ifdef need_compile_java
 
+annotation_processor_flags :=
+annotation_processor_deps :=
+
+ifdef LOCAL_ANNOTATION_PROCESSORS
+  annotation_processor_jars := $(call java-lib-deps,$(LOCAL_ANNOTATION_PROCESSORS),true)
+  annotation_processor_flags += -processorpath $(call normalize-path-list,$(annotation_processor_jars))
+  annotation_processor_deps += $(annotation_processor_jars)
+
+  # b/25860419: annotation processors must be explicitly specified for grok
+  annotation_processor_flags += $(foreach class,$(LOCAL_ANNOTATION_PROCESSOR_CLASSES),-processor $(class))
+
+  annotation_processor_jars :=
+endif
+
 full_static_java_libs := \
     $(foreach lib,$(LOCAL_STATIC_JAVA_LIBRARIES), \
       $(call intermediates-dir-for, \
-        JAVA_LIBRARIES,$(lib),$(LOCAL_IS_HOST_MODULE),COMMON)/javalib.jar)
+        JAVA_LIBRARIES,$(lib),$(LOCAL_IS_HOST_MODULE),COMMON)/classes.jar)
 
 $(LOCAL_INTERMEDIATE_TARGETS): PRIVATE_STATIC_JAVA_LIBRARIES := $(full_static_java_libs)
 
@@ -159,6 +173,7 @@ $(LOCAL_INTERMEDIATE_TARGETS): PRIVATE_RESOURCE_DIR := $(LOCAL_RESOURCE_DIR)
 $(LOCAL_INTERMEDIATE_TARGETS): PRIVATE_ASSET_DIR := $(LOCAL_ASSET_DIR)
 
 $(LOCAL_INTERMEDIATE_TARGETS): PRIVATE_CLASS_INTERMEDIATES_DIR := $(intermediates.COMMON)/classes
+$(LOCAL_INTERMEDIATE_TARGETS): PRIVATE_ANNO_INTERMEDIATES_DIR := $(intermediates.COMMON)/anno
 $(LOCAL_INTERMEDIATE_TARGETS): PRIVATE_SOURCE_INTERMEDIATES_DIR := $(intermediates.COMMON)/src
 $(LOCAL_INTERMEDIATE_TARGETS): PRIVATE_HAS_PROTO_SOURCES := $(if $(proto_sources),true)
 $(LOCAL_INTERMEDIATE_TARGETS): PRIVATE_PROTO_SOURCE_INTERMEDIATES_DIR := $(intermediates.COMMON)/proto
@@ -216,11 +231,11 @@ ifeq ($(USE_CORE_LIB_BOOTCLASSPATH),true)
 ifeq ($(LOCAL_NO_STANDARD_LIBRARIES),true)
 my_bootclasspath := ""
 else
-my_bootclasspath := $(call normalize-path-list,$(call host-dex-java-lib-files,core-oj-hostdex core-libart-hostdex))
+my_bootclasspath := $(call normalize-path-list,$(call java-lib-files,core-oj-hostdex core-libart-hostdex,true))
 endif
 $(LOCAL_INTERMEDIATE_TARGETS): PRIVATE_BOOTCLASSPATH := -bootclasspath $(my_bootclasspath)
 
-full_shared_java_libs := $(call host-dex-java-lib-files,$(LOCAL_JAVA_LIBRARIES))
+full_shared_java_libs := $(call java-lib-files,$(LOCAL_JAVA_LIBRARIES),true)
 full_java_lib_deps := $(full_shared_java_libs)
 else # !USE_CORE_LIB_BOOTCLASSPATH
 $(LOCAL_INTERMEDIATE_TARGETS): PRIVATE_BOOTCLASSPATH :=
@@ -242,7 +257,7 @@ ifneq ($(apk_libraries),)
   link_apk_libraries := \
       $(foreach lib,$(apk_libraries), \
         $(call intermediates-dir-for, \
-              APPS,$(lib),,COMMON)/classes.jar)
+              APPS,$(lib),,COMMON)/classes-pre-proguard.jar)
 
   # link against the jar with full original names (before proguard processing).
   full_shared_java_libs += $(link_apk_libraries)
@@ -263,7 +278,7 @@ ifdef LOCAL_INSTRUMENTATION_FOR
   link_instr_intermediates_dir.COMMON := $(call intermediates-dir-for, \
       APPS,$(LOCAL_INSTRUMENTATION_FOR),,COMMON)
   # link against the jar with full original names (before proguard processing).
-  link_instr_classes_jar := $(link_instr_intermediates_dir.COMMON)/classes.jar
+  link_instr_classes_jar := $(link_instr_intermediates_dir.COMMON)/classes-pre-proguard.jar
   full_java_libs += $(link_instr_classes_jar)
   full_java_lib_deps += $(link_instr_classes_jar)
 endif  # LOCAL_INSTRUMENTATION_FOR
@@ -381,35 +396,24 @@ endif # LOCAL_JACK_ENABLED
 # Verify that all libraries are safe to use
 ###########################################################
 ifndef LOCAL_IS_HOST_MODULE
-my_link_type := $(intermediates.COMMON)/link_type
-all_link_types: $(my_link_type)
-my_link_type_deps := $(strip \
-  $(foreach lib,$(LOCAL_STATIC_JAVA_LIBRARIES),\
-    $(call intermediates-dir-for, \
-      JAVA_LIBRARIES,$(lib),,COMMON)/link_type) \
-  $(foreach lib,$(apk_libraries), \
-    $(call intermediates-dir-for, \
-      APPS,$(lib),,COMMON)/link_type))
 ifeq ($(LOCAL_SDK_VERSION),system_current)
-$(my_link_type): PRIVATE_LINK_TYPE := java:system
-$(my_link_type): PRIVATE_WARN_TYPES := java:platform
-$(my_link_type): PRIVATE_ALLOWED_TYPES := java:sdk java:system
+my_link_type := java:system
+my_warn_types := java:platform
+my_allowed_types := java:sdk java:system
 else ifneq ($(LOCAL_SDK_VERSION),)
-$(my_link_type): PRIVATE_LINK_TYPE := java:sdk
-$(my_link_type): PRIVATE_WARN_TYPES := java:system java:platform
-$(my_link_type): PRIVATE_ALLOWED_TYPES := java:sdk
+my_link_type := java:sdk
+my_warn_types := java:system java:platform
+my_allowed_types := java:sdk
 else
-$(my_link_type): PRIVATE_LINK_TYPE := java:platform
-$(my_link_type): PRIVATE_WARN_TYPES :=
-$(my_link_type): PRIVATE_ALLOWED_TYPES := java:sdk java:system java:platform
+my_link_type := java:platform
+my_warn_types :=
+my_allowed_types := java:sdk java:system java:platform
 endif
-$(eval $(call link-type-partitions,$(my_link_type)))
-$(my_link_type): PRIVATE_DEPS := $(my_link_type_deps)
-$(my_link_type): PRIVATE_MODULE := $(LOCAL_MODULE)
-$(my_link_type): PRIVATE_MAKEFILE := $(LOCAL_MODULE_MAKEFILE)
-$(my_link_type): $(my_link_type_deps) $(CHECK_LINK_TYPE)
-	@echo Check Java library module types: $@
-	$(check-link-type)
 
-$(LOCAL_BUILT_MODULE): $(my_link_type)
+my_link_deps := $(addprefix JAVA_LIBRARIES:,$(LOCAL_STATIC_JAVA_LIBRARIES))
+my_link_deps += $(addprefix APPS:,$(apk_libraries))
+
+my_2nd_arch_prefix := $(LOCAL_2ND_ARCH_VAR_PREFIX)
+my_common := COMMON
+include $(BUILD_SYSTEM)/link_type.mk
 endif  # !LOCAL_IS_HOST_MODULE

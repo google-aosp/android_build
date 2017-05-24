@@ -681,7 +681,7 @@ endef
 # $(1): library name
 # $(2): Non-empty if IS_HOST_MODULE
 define _java-lib-full-classes.jar
-$(call _java-lib-dir,$(1),$(2))/$(if $(2),javalib,classes)$(COMMON_JAVA_PACKAGE_SUFFIX)
+$(call _java-lib-dir,$(1),$(2))/classes.jar
 endef
 
 # Get the jar files (you can pass to "javac -classpath") of static or shared
@@ -704,14 +704,6 @@ define java-lib-deps
 $(call java-lib-files,$(1),$(2))
 endef
 
-# Get the jar files (you can pass to "javac -classpath") of host dalvik Java libraries.
-# You can also use them as dependency files.
-# A host dalvik Java library is different from a host Java library in that
-# the java lib file is classes.jar, not javalib.jar.
-# $(1): library name list
-define host-dex-java-lib-files
-$(foreach lib,$(1),$(call _java-lib-dir,$(lib),true)/classes.jar)
-endef
 
 ###########################################################
 ## Convert "core ext framework" to "out/.../classes.jack ..."
@@ -1025,12 +1017,15 @@ $(foreach d,$1, \
 $(hide) echo >> $2
 endef
 
+# b/37755219
+RS_CC_ASAN_OPTIONS := ASAN_OPTIONS=detect_leaks=0:detect_container_overflow=0
+
 define transform-renderscripts-to-java-and-bc
 @echo "RenderScript: $(PRIVATE_MODULE) <= $(PRIVATE_RS_SOURCE_FILES)"
 $(hide) rm -rf $(PRIVATE_RS_OUTPUT_DIR)
 $(hide) mkdir -p $(PRIVATE_RS_OUTPUT_DIR)/res/raw
 $(hide) mkdir -p $(PRIVATE_RS_OUTPUT_DIR)/src
-$(hide) $(PRIVATE_RS_CC) \
+$(hide) $(RS_CC_ASAN_OPTIONS) $(PRIVATE_RS_CC) \
   -o $(PRIVATE_RS_OUTPUT_DIR)/res/raw \
   -p $(PRIVATE_RS_OUTPUT_DIR)/src \
   -d $(PRIVATE_RS_OUTPUT_DIR) \
@@ -1066,7 +1061,7 @@ define transform-renderscripts-to-cpp-and-bc
 @echo "RenderScript: $(PRIVATE_MODULE) <= $(PRIVATE_RS_SOURCE_FILES)"
 $(hide) rm -rf $(PRIVATE_RS_OUTPUT_DIR)
 $(hide) mkdir -p $(PRIVATE_RS_OUTPUT_DIR)/
-$(hide) $(PRIVATE_RS_CC) \
+$(hide) $(RS_CC_ASAN_OPTIONS) $(PRIVATE_RS_CC) \
   -o $(PRIVATE_RS_OUTPUT_DIR)/ \
   -d $(PRIVATE_RS_OUTPUT_DIR) \
   -a $@ -MD \
@@ -1834,18 +1829,21 @@ endef
 define transform-to-stripped-keep-mini-debug-info
 @echo "$($(PRIVATE_PREFIX)DISPLAY) Strip (mini debug info): $(PRIVATE_MODULE) ($@)"
 @mkdir -p $(dir $@)
-$(hide) $(PRIVATE_NM) -D $< --format=posix --defined-only | awk '{ print $$1 }' | sort >$@.dynsyms
-$(hide) $(PRIVATE_NM) $< --format=posix --defined-only | awk '{ if ($$2 == "T" || $$2 == "t" || $$2 == "D") print $$1 }' | sort >$@.funcsyms
-$(hide) comm -13 $@.dynsyms $@.funcsyms >$@.keep_symbols
-$(hide) $(PRIVATE_OBJCOPY) --only-keep-debug $< $@.debug
-$(hide) $(PRIVATE_OBJCOPY) --rename-section .debug_frame=saved_debug_frame $@.debug $@.mini_debuginfo
-$(hide) $(PRIVATE_OBJCOPY) -S --remove-section .gdb_index --remove-section .comment --keep-symbols=$@.keep_symbols $@.mini_debuginfo
-$(hide) $(PRIVATE_OBJCOPY) --rename-section saved_debug_frame=.debug_frame $@.mini_debuginfo
-$(hide) $(PRIVATE_STRIP) --strip-all -R .comment $< -o $@
-$(hide) rm -f $@.mini_debuginfo.xz
-$(hide) xz $@.mini_debuginfo
-$(hide) $(PRIVATE_OBJCOPY) --add-section .gnu_debugdata=$@.mini_debuginfo.xz $@
-$(hide) rm -f $@.dynsyms $@.funcsyms $@.keep_symbols $@.debug $@.mini_debuginfo.xz
+$(hide) rm -f $@ $@.dynsyms $@.funcsyms $@.keep_symbols $@.debug $@.mini_debuginfo.xz
+if $(PRIVATE_STRIP) --strip-all -R .comment $< -o $@; then \
+  $(PRIVATE_OBJCOPY) --only-keep-debug $< $@.debug && \
+  $(PRIVATE_NM) -D $< --format=posix --defined-only | awk '{ print $$1 }' | sort >$@.dynsyms && \
+  $(PRIVATE_NM) $< --format=posix --defined-only | awk '{ if ($$2 == "T" || $$2 == "t" || $$2 == "D") print $$1 }' | sort >$@.funcsyms && \
+  comm -13 $@.dynsyms $@.funcsyms >$@.keep_symbols && \
+  $(PRIVATE_OBJCOPY) --rename-section .debug_frame=saved_debug_frame $@.debug $@.mini_debuginfo && \
+  $(PRIVATE_OBJCOPY) -S --remove-section .gdb_index --remove-section .comment --keep-symbols=$@.keep_symbols $@.mini_debuginfo && \
+  $(PRIVATE_OBJCOPY) --rename-section saved_debug_frame=.debug_frame $@.mini_debuginfo && \
+  rm -f $@.mini_debuginfo.xz && \
+  xz $@.mini_debuginfo && \
+  $(PRIVATE_OBJCOPY) --add-section .gnu_debugdata=$@.mini_debuginfo.xz $@; \
+else \
+  cp -f $< $@; \
+fi
 endef
 
 define transform-to-stripped-keep-symbols
@@ -2005,6 +2003,9 @@ else
 APPS_DEFAULT_VERSION_NAME := $(PLATFORM_VERSION)
 endif
 
+# b/37750224
+AAPT_ASAN_OPTIONS := ASAN_OPTIONS=detect_leaks=0
+
 # TODO: Right now we generate the asset resources twice, first as part
 # of generating the Java classes, then at the end when packaging the final
 # assets.  This should be changed to do one of two things: (1) Don't generate
@@ -2019,7 +2020,7 @@ endif
 define create-resource-java-files
 @mkdir -p $(PRIVATE_SOURCE_INTERMEDIATES_DIR)
 @mkdir -p $(dir $(PRIVATE_RESOURCE_PUBLICS_OUTPUT))
-$(hide) $(AAPT) package $(PRIVATE_AAPT_FLAGS) -m \
+$(hide) $(AAPT_ASAN_OPTIONS) $(AAPT) package $(PRIVATE_AAPT_FLAGS) -m \
     $(eval # PRIVATE_PRODUCT_AAPT_CONFIG is intentionally missing-- see comment.) \
     $(addprefix -J , $(PRIVATE_SOURCE_INTERMEDIATES_DIR)) \
     $(addprefix -M , $(PRIVATE_ANDROID_MANIFEST)) \
@@ -2196,9 +2197,9 @@ endef
 # $(2): bootclasspath
 define compile-java
 $(hide) rm -f $@
-$(hide) rm -rf $(PRIVATE_CLASS_INTERMEDIATES_DIR)
+$(hide) rm -rf $(PRIVATE_CLASS_INTERMEDIATES_DIR) $(PRIVATE_ANNO_INTERMEDIATES_DIR)
 $(hide) mkdir -p $(dir $@)
-$(hide) mkdir -p $(PRIVATE_CLASS_INTERMEDIATES_DIR)
+$(hide) mkdir -p $(PRIVATE_CLASS_INTERMEDIATES_DIR) $(PRIVATE_ANNO_INTERMEDIATES_DIR)
 $(call unzip-jar-files,$(PRIVATE_STATIC_JAVA_LIBRARIES),$(PRIVATE_CLASS_INTERMEDIATES_DIR))
 $(call dump-words-to-file,$(PRIVATE_JAVA_SOURCES),$(PRIVATE_CLASS_INTERMEDIATES_DIR)/java-source-list)
 $(hide) if [ -d "$(PRIVATE_SOURCE_INTERMEDIATES_DIR)" ]; then \
@@ -2211,16 +2212,16 @@ $(if $(PRIVATE_HAS_RS_SOURCES), \
 $(hide) tr ' ' '\n' < $(PRIVATE_CLASS_INTERMEDIATES_DIR)/java-source-list \
     | $(NORMALIZE_PATH) | sort -u > $(PRIVATE_CLASS_INTERMEDIATES_DIR)/java-source-list-uniq
 $(hide) if [ -s $(PRIVATE_CLASS_INTERMEDIATES_DIR)/java-source-list-uniq ] ; then \
-    ( $(1) -encoding UTF-8 \
+    $(SOONG_JAVAC_WRAPPER) $(1) -encoding UTF-8 \
     $(if $(findstring true,$(PRIVATE_WARNINGS_ENABLE)),$(xlint_unchecked),) \
     $(2) \
     $(addprefix -classpath ,$(strip \
         $(call normalize-path-list,$(PRIVATE_ALL_JAVA_LIBRARIES)))) \
     $(if $(findstring true,$(PRIVATE_WARNINGS_ENABLE)),$(xlint_unchecked),) \
-    -extdirs "" -d $(PRIVATE_CLASS_INTERMEDIATES_DIR) \
+    -extdirs "" -d $(PRIVATE_CLASS_INTERMEDIATES_DIR) -s $(PRIVATE_ANNO_INTERMEDIATES_DIR) \
     $(PRIVATE_JAVACFLAGS) \
     \@$(PRIVATE_CLASS_INTERMEDIATES_DIR)/java-source-list-uniq \
-    || ( rm -rf $(PRIVATE_CLASS_INTERMEDIATES_DIR) ; exit 41 ) ) 2>&1 | $(JAVAC_FILTER); \
+    || ( rm -rf $(PRIVATE_CLASS_INTERMEDIATES_DIR) ; exit 41 ) \
 fi
 $(if $(PRIVATE_JAVA_LAYERS_FILE), $(hide) build/tools/java-layers.py \
     $(PRIVATE_JAVA_LAYERS_FILE) \@$(PRIVATE_CLASS_INTERMEDIATES_DIR)/java-source-list-uniq,)
@@ -2267,9 +2268,10 @@ $(hide) mkdir -p $(dir $(PRIVATE_CLASSES_JACK))
 $(hide) mkdir -p $(PRIVATE_JACK_INTERMEDIATES_DIR)
 $(if $(PRIVATE_JACK_INCREMENTAL_DIR),$(hide) mkdir -p $(PRIVATE_JACK_INCREMENTAL_DIR))
 $(call dump-words-to-file,$(PRIVATE_JAVA_SOURCES),$(PRIVATE_JACK_INTERMEDIATES_DIR)/java-source-list)
-$(hide) if [ -d "$(PRIVATE_SOURCE_INTERMEDIATES_DIR)" ]; then \
-          find $(PRIVATE_SOURCE_INTERMEDIATES_DIR) -name '*.java' >> $(PRIVATE_JACK_INTERMEDIATES_DIR)/java-source-list; \
-fi
+$(if $(PRIVATE_SOURCE_INTERMEDIATES_DIR), \
+    $(hide) if [ -d "$(PRIVATE_SOURCE_INTERMEDIATES_DIR)" ]; then \
+            find $(PRIVATE_SOURCE_INTERMEDIATES_DIR) -name '*.java' >> $(PRIVATE_JACK_INTERMEDIATES_DIR)/java-source-list; \
+    fi)
 $(if $(PRIVATE_HAS_PROTO_SOURCES), \
     $(hide) find $(PRIVATE_PROTO_SOURCE_INTERMEDIATES_DIR) -name '*.java' >> $(PRIVATE_JACK_INTERMEDIATES_DIR)/java-source-list )
 $(if $(PRIVATE_HAS_RS_SOURCES), \
@@ -2286,6 +2288,10 @@ $(if $(PRIVATE_EXTRA_JAR_ARGS),
     $(hide) $(call add-java-resources-to,$@.res.tmp.zip)
     $(hide) unzip -qo $@.res.tmp.zip -d $@.res.tmp
     $(hide) rm $@.res.tmp.zip)
+$(if $(PRIVATE_JACK_IMPORT_JAR),
+    $(hide) mkdir -p $@.tmpjill.res
+    $(hide) unzip -qo $(PRIVATE_JACK_IMPORT_JAR) -d $@.tmpjill.res
+    $(hide) find $@.tmpjill.res -iname "*.class" -delete)
 $(hide) if [ -s $(PRIVATE_JACK_INTERMEDIATES_DIR)/java-source-list-uniq ] ; then \
     export tmpEcjArg="@$(PRIVATE_JACK_INTERMEDIATES_DIR)/java-source-list-uniq"; \
 else \
@@ -2298,6 +2304,8 @@ $(call call-jack) \
         -D jack.dex.optimize="false") \
     $(if $(PRIVATE_RMTYPEDEFS), \
         -D jack.android.remove-typedef="true") \
+    $(if $(PRIVATE_JACK_IMPORT_JAR), \
+        --import $(PRIVATE_JACK_IMPORT_JAR) --import-resource $@.tmpjill.res) \
     $(addprefix --classpath ,$(strip \
         $(call normalize-path-list,$(PRIVATE_JACK_SHARED_LIBRARIES)))) \
     $(addprefix --import ,$(call reverse-list,$(PRIVATE_STATIC_JACK_LIBRARIES))) \
@@ -2392,13 +2400,16 @@ else \
 fi
 endef
 
+# b/37756495
+IJAR_ASAN_OPTIONS := ASAN_OPTIONS=detect_leaks=0
+
 ## Rule to create a table of contents from a .jar file.
 ## Must be called with $(eval).
 # $(1): A .jar file
 define _transform-jar-to-toc
 $1.toc: $1 | $(IJAR)
 	@echo Generating TOC: $$@
-	$(hide) $(IJAR) $$< $$@.tmp
+	$(hide) $(IJAR_ASAN_OPTIONS) $(IJAR) $$< $$@.tmp
 	$$(call commit-change-for-toc,$$@)
 endef
 
@@ -2513,6 +2524,13 @@ define desugar-classpath
 $(filter-out -classpath -bootclasspath "",$(subst :,$(space),$(1)))
 endef
 
+# Takes an sdk version that might be PLATFORM_VERSION_CODENAME (for example P),
+# returns a number greater than the highest existing sdk version if it is, or
+# the input if it is not.
+define codename-or-sdk-to-sdk
+$(if $(filter $(1),$(PLATFORM_VERSION_CODENAME)),10000,$(1))
+endef
+
 define desugar-classes-jar
 @echo Desugar: $@
 @mkdir -p $(dir $@)
@@ -2520,7 +2538,7 @@ $(hide) rm -f $@ $@.tmp
 $(hide) java -jar $(DESUGAR) \
     $(addprefix --bootclasspath_entry ,$(call desugar-bootclasspath,$(PRIVATE_BOOTCLASSPATH))) \
     $(addprefix --classpath_entry ,$(PRIVATE_ALL_JAVA_LIBRARIES)) \
-    --min_sdk_version $(PRIVATE_SDK_VERSION) \
+    --min_sdk_version $(call codename-or-sdk-to-sdk,$(PRIVATE_DEFAULT_APP_TARGET_SDK)) \
     --allow_empty_bootclasspath \
     $(if $(filter --core-library,$(PRIVATE_DX_FLAGS)),--core_library) \
     -i $< -o $@.tmp
@@ -2537,7 +2555,7 @@ $(hide) rm -f $(dir $@)classes*.dex
 $(hide) $(DX) \
     -JXms16M -JXmx2048M \
     --dex --output=$(dir $@) \
-    --min-sdk-version=$(PRIVATE_SDK_VERSION) \
+    --min-sdk-version=$(call codename-or-sdk-to-sdk,$(PRIVATE_DEFAULT_APP_TARGET_SDK)) \
     $(if $(NO_OPTIMIZE_DX), \
         --no-optimize) \
     $(if $(GENERATE_DEX_DEBUG), \
@@ -2588,7 +2606,7 @@ endef
 #values; applications can override these by explicitly stating
 #them in their manifest.
 define add-assets-to-package
-$(hide) $(AAPT) package -u $(PRIVATE_AAPT_FLAGS) \
+$(hide) $(AAPT_ASAN_OPTIONS) $(AAPT) package -u $(PRIVATE_AAPT_FLAGS) \
     $(addprefix -c , $(PRIVATE_PRODUCT_AAPT_CONFIG)) \
     $(addprefix --preferred-density , $(PRIVATE_PRODUCT_AAPT_PREF_CONFIG)) \
     $(addprefix -M , $(PRIVATE_ANDROID_MANIFEST)) \
@@ -3133,44 +3151,6 @@ $(strip $(if $(LOCAL_RECORDED_MODULE_TYPE),,
 endef
 
 ###########################################################
-# Link type checking
-###########################################################
-define check-link-type
-$(hide) mkdir -p $(dir $@) && rm -f $@
-$(hide) $(CHECK_LINK_TYPE) --makefile $(PRIVATE_MAKEFILE) --module $(PRIVATE_MODULE) \
-  --type "$(PRIVATE_LINK_TYPE)" $(addprefix --allowed ,$(PRIVATE_ALLOWED_TYPES)) \
-  $(addprefix --warn ,$(PRIVATE_WARN_TYPES)) $(PRIVATE_DEPS)
-$(hide) echo "$(PRIVATE_LINK_TYPE)" >$@
-endef
-
-define link-type-partitions
-ifndef LOCAL_IS_HOST_MODULE
-ifneq (true,$(LOCAL_UNINSTALLABLE_MODULE))
-ifneq ($(filter $(TARGET_OUT_VENDOR)/%,$(my_module_path)),)
-$(1): PRIVATE_LINK_TYPE += partition:vendor
-$(1): PRIVATE_WARN_TYPES += partition:data
-$(1): PRIVATE_ALLOWED_TYPES += partition:vendor partition:oem partition:odm
-else ifneq ($(filter $(TARGET_OUT_OEM)/%,$(my_module_path)),)
-$(1): PRIVATE_LINK_TYPE += partition:oem
-$(1): PRIVATE_WARN_TYPES += partition:data
-$(1): PRIVATE_ALLOWED_TYPES += partition:vendor partition:oem partition:odm
-else ifneq ($(filter $(TARGET_OUT_ODM)/%,$(my_module_path)),)
-$(1): PRIVATE_LINK_TYPE += partition:odm
-$(1): PRIVATE_WARN_TYPES += partition:data
-$(1): PRIVATE_ALLOWED_TYPES += partition:vendor partition:oem partition:odm
-else ifneq ($(filter $(TARGET_OUT_DATA)/%,$(my_module_path)),)
-$(1): PRIVATE_LINK_TYPE += partition:data
-$(1): PRIVATE_ALLOWED_TYPES += partition:data partition:vendor partition:oem partition:odm
-else
-$(1): PRIVATE_WARN_TYPES += partition:vendor partition:oem partition:odm partition:data
-endif
-else # uninstallable module
-$(1): PRIVATE_ALLOWED_TYPES += partition:vendor partition:oem partition:odm partition:data
-endif
-endif
-endef
-
-###########################################################
 # Basic math functions for positive integers <= 100
 #
 # (SDK versions for example)
@@ -3236,11 +3216,12 @@ endef
 ## Compatibility suite tools
 ###########################################################
 
-# Return a list of output directories for a given suite and the current LOCAL_MODULE
+# Return a list of output directories for a given suite and the current LOCAL_MODULE.
+# Can be passed a subdirectory to use for the common testcase directory.
 define compatibility_suite_dirs
   $(strip \
     $(COMPATIBILITY_TESTCASES_OUT_$(1)) \
-    $($(my_prefix)OUT_TESTCASES)/$(LOCAL_MODULE))
+    $($(my_prefix)OUT_TESTCASES)/$(LOCAL_MODULE)$(2))
 endef
 
 # For each suite:
@@ -3299,3 +3280,40 @@ include $(BUILD_SYSTEM)/distdir.mk
 #	  sed -e 's/#.*//' -e 's/^[^:]*: *//' -e 's/ *\\$$//' \
 #	      -e '/^$$/ d' -e 's/$$/ :/' < $*.d >> $*.P; \
 #	  rm -f $*.d
+
+
+###########################################################
+# Append the information to generate a RRO package for the
+# source module.
+#
+#  $(1): Source module name.
+#  $(2): Whether $(3) is a manifest package name or not.
+#  $(3): Manifest package name if $(2) is true.
+#        Otherwise, android manifest file path of the
+#        source module.
+#  $(4): Whether LOCAL_EXPORT_PACKAGE_RESOURCES is set or
+#        not for the source module.
+#  $(5): Resource overlay list.
+###########################################################
+define append_enforce_rro_sources
+  $(eval ENFORCE_RRO_SOURCES += \
+      $(strip $(1))||$(strip $(2))||$(strip $(3))||$(strip $(4))||$(call normalize-path-list, $(strip $(5))))
+endef
+
+###########################################################
+# Generate all RRO packages for source modules stored in
+# ENFORCE_RRO_SOURCES
+###########################################################
+define generate_all_enforce_rro_packages
+$(foreach source,$(ENFORCE_RRO_SOURCES), \
+  $(eval _o := $(subst ||,$(space),$(source))) \
+  $(eval enforce_rro_source_module := $(word 1,$(_o))) \
+  $(eval enforce_rro_source_is_manifest_package_name := $(word 2,$(_o))) \
+  $(eval enforce_rro_source_manifest_package_info := $(word 3,$(_o))) \
+  $(eval enforce_rro_use_res_lib := $(word 4,$(_o))) \
+  $(eval enforce_rro_source_overlays := $(subst :, ,$(word 5,$(_o)))) \
+  $(eval enforce_rro_module := $(enforce_rro_source_module)__auto_generated_rro) \
+  $(eval include $(BUILD_SYSTEM)/generate_enforce_rro.mk) \
+  $(eval ALL_MODULES.$(enforce_rro_source_module).REQUIRED += $(enforce_rro_module)) \
+)
+endef

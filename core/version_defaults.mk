@@ -38,50 +38,63 @@ ifdef INTERNAL_BUILD_ID_MAKEFILE
   include $(INTERNAL_BUILD_ID_MAKEFILE)
 endif
 
-# Returns all words in $1 up to and including $2
-define find_and_earlier
-  $(strip $(if $(1),
-    $(firstword $(1))
-    $(if $(filter $(firstword $(1)),$(2)),,
-      $(call find_and_earlier,$(wordlist 2,$(words $(1)),$(1)),$(2)))))
-endef
+DEFAULT_PLATFORM_VERSION := OPR1
+MIN_PLATFORM_VERSION := OPR1
+MAX_PLATFORM_VERSION := PPR1
 
-#$(warning $(call find_and_earlier,A B C,A))
-#$(warning $(call find_and_earlier,A B C,B))
-#$(warning $(call find_and_earlier,A B C,C))
-#$(warning $(call find_and_earlier,A B C,D))
+ALLOWED_VERSIONS := $(call allowed-platform-versions,\
+  $(MIN_PLATFORM_VERSION),\
+  $(MAX_PLATFORM_VERSION),\
+  $(DEFAULT_PLATFORM_VERSION))
 
-define version-list
-$(1) $(1)DR1 $(1)DR2 $(1)MR1 $(1)MR2
-endef
-
-ALL_VERSIONS := O P
-ALL_VERSIONS := $(foreach v,$(ALL_VERSIONS),$(call version-list,$(v)))
-
-ifeq (,$(TARGET_PLATFORM_VERSION))
-  # Default targeted platform version
-  # TODO: PLATFORM_VERSION, PLATFORM_SDK_VERSION, etc. should be conditional
-  # on this
-  TARGET_PLATFORM_VERSION := O
+ifndef TARGET_PLATFORM_VERSION
+  TARGET_PLATFORM_VERSION := $(DEFAULT_PLATFORM_VERSION)
+else ifeq ($(TARGET_PLATFORM_VERSION),OPR1)
+  # HACK: lunch currently sets TARGET_PLATFORM_VERSION to
+  # DEFAULT_PLATFORM_VERSION, which causes unnecessary pain
+  # when the old DEFAULT_PLATFORM_VERSION becomes invalid.
+  # For now, silently upgrade OPR1 to the current default.
+  TARGET_PLATFORM_VERSION := $(DEFAULT_PLATFORM_VERSION)
 endif
 
-ifeq (,$(filter $(ALL_VERSIONS), $(TARGET_PLATFORM_VERSION)))
-$(warning Invalid TARGET_PLATFORM_VERSION '$(TARGET_PLATFORM_VERSION)', must be one of)
-$(warning $(ALL_VERSIONS))
-$(error Stopping...)
+ifeq (,$(filter $(ALLOWED_VERSIONS), $(TARGET_PLATFORM_VERSION)))
+  $(warning Invalid TARGET_PLATFORM_VERSION '$(TARGET_PLATFORM_VERSION)', must be one of)
+  $(error $(ALLOWED_VERSIONS))
 endif
 
-ENABLED_VERSIONS := $(call find_and_earlier,$(ALL_VERSIONS),$(TARGET_PLATFORM_VERSION))
+# Default versions for each TARGET_PLATFORM_VERSION
+# TODO: PLATFORM_VERSION, PLATFORM_SDK_VERSION, etc. should be conditional
+# on this
 
-$(foreach v,$(ENABLED_VERSIONS), \
-  $(eval IS_AT_LEAST_$(v) := true))
+# This is the canonical definition of the platform version,
+# which is the version that we reveal to the end user.
+# Update this value when the platform version changes (rather
+# than overriding it somewhere else).  Can be an arbitrary string.
+
+# When you add a new PLATFORM_VERSION which will result in a new
+# PLATFORM_SDK_VERSION please ensure you add a corresponding isAtLeast*
+# method in the following java file:
+# frameworks/support/compat/gingerbread/android/support/v4/os/BuildCompat.java
+
+# When you change PLATFORM_VERSION for a given PLATFORM_SDK_VERSION
+# please add that PLATFORM_VERSION to the following text file:
+# cts/tests/tests/os/assets/platform_versions.txt
+PLATFORM_VERSION.OPR1 := O
+
+# These are the current development codenames.
+PLATFORM_VERSION_CODENAME.OPR1 := O
+PLATFORM_VERSION_CODENAME.PPR1 := P
 
 ifndef PLATFORM_VERSION
   # This is the canonical definition of the platform version,
   # which is the version that we reveal to the end user.
   # Update this value when the platform version changes (rather
   # than overriding it somewhere else).  Can be an arbitrary string.
-  PLATFORM_VERSION := o-preview-1
+  PLATFORM_VERSION := $(PLATFORM_VERSION.$(TARGET_PLATFORM_VERSION))
+  ifndef PLATFORM_VERSION
+    # PLATFORM_VERSION falls back to TARGET_PLATFORM_VERSION
+    PLATFORM_VERSION := $(TARGET_PLATFORM_VERSION)
+  endif
 endif
 
 ifndef PLATFORM_SDK_VERSION
@@ -93,6 +106,14 @@ ifndef PLATFORM_SDK_VERSION
   # intermediate builds).  During development, this number remains at the
   # SDK version the branch is based on and PLATFORM_VERSION_CODENAME holds
   # the code-name of the new development work.
+
+  # When you change PLATFORM_SDK_VERSION please ensure you also update the
+  # corresponding methods for isAtLeast* in the following java file:
+  # frameworks/support/compat/gingerbread/android/support/v4/os/BuildCompat.java
+
+  # When you increment the PLATFORM_SDK_VERSION please ensure you also
+  # clear out the following text file of all older PLATFORM_VERSION's:
+  # cts/tests/tests/os/assets/platform_versions.txt
   PLATFORM_SDK_VERSION := 25
 endif
 
@@ -106,14 +127,31 @@ ifndef PLATFORM_JACK_MIN_SDK_VERSION
 endif
 
 ifndef PLATFORM_VERSION_CODENAME
-  # This is the current development code-name, if the build is not a final
-  # release build.  If this is a final release build, it is simply "REL".
-  PLATFORM_VERSION_CODENAME := REL
+  PLATFORM_VERSION_CODENAME := $(PLATFORM_VERSION_CODENAME.$(TARGET_PLATFORM_VERSION))
+  ifndef PLATFORM_VERSION_CODENAME
+    # PLATFORM_VERSION_CODENAME falls back to TARGET_PLATFORM_VERSION
+    PLATFORM_VERSION_CODENAME := $(TARGET_PLATFORM_VERSION)
+  endif
 
   # This is all of the development codenames that are active.  Should be either
   # the same as PLATFORM_VERSION_CODENAME or a comma-separated list of additional
   # codenames after PLATFORM_VERSION_CODENAME.
-  PLATFORM_VERSION_ALL_CODENAMES := $(PLATFORM_VERSION_CODENAME)
+  PLATFORM_VERSION_ALL_CODENAMES :=
+
+  # Build a list of all possible code names. Avoid duplicates, and stop when we
+  # reach a codename that matches PLATFORM_VERSION_CODENAME (anything beyond
+  # that is not included in our build.
+  _versions_in_target := \
+    $(call find_and_earlier,$(ALL_VERSIONS),$(TARGET_PLATFORM_VERSION))
+  $(foreach version,$(_versions_in_target),\
+    $(eval _codename := $(PLATFORM_VERSION_CODENAME.$(version)))\
+    $(if $(filter $(_codename),$(PLATFORM_VERSION_ALL_CODENAMES)),,\
+      $(eval PLATFORM_VERSION_ALL_CODENAMES += $(_codename))))
+
+  # And convert from space separated to comma separated.
+  PLATFORM_VERSION_ALL_CODENAMES := \
+    $(subst $(space),$(comma),$(strip $(PLATFORM_VERSION_ALL_CODENAMES)))
+
 endif
 
 ifeq (REL,$(PLATFORM_VERSION_CODENAME))
@@ -152,7 +190,7 @@ ifndef PLATFORM_SECURITY_PATCH
     #  It must be of the form "YYYY-MM-DD" on production devices.
     #  It must match one of the Android Security Patch Level strings of the Public Security Bulletins.
     #  If there is no $PLATFORM_SECURITY_PATCH set, keep it empty.
-      PLATFORM_SECURITY_PATCH := 2016-11-05
+      PLATFORM_SECURITY_PATCH := 2017-04-05
 endif
 
 ifndef PLATFORM_BASE_OS

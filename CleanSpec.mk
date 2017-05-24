@@ -400,6 +400,23 @@ $(call add-clean-step, rm -rf $(TARGET_OUT_TESTCASES))
 
 $(call add-clean-step, rm -rf $(TARGET_OUT_ETC)/init)
 
+# Libraries are moved from {system|vendor}/lib to ./lib/framework, ./lib/vndk, etc.
+$(call add-clean-step, rm -rf $(PRODUCT_OUT)/system/lib*)
+$(call add-clean-step, rm -rf $(PRODUCT_OUT)/vendor/lib*)
+$(call add-clean-step, rm -rf $(PRODUCT_OUT)/system/vendor/lib*)
+
+# Revert that move
+$(call add-clean-step, rm -rf $(PRODUCT_OUT)/system/lib*)
+$(call add-clean-step, rm -rf $(PRODUCT_OUT)/vendor/lib*)
+$(call add-clean-step, rm -rf $(PRODUCT_OUT)/system/vendor/lib*)
+
+# Sanitized libraries now live in a different location.
+$(call add-clean-step, rm -rf $(PRODUCT_OUT)/data/lib*)
+$(call add-clean-step, rm -rf $(PRODUCT_OUT)/data/vendor/lib*)
+
+# Soong module variant change, remove obsolete intermediates
+$(call add-clean-step, rm -rf $(OUT_DIR)/soong/.intermediates)
+
 # ************************************************
 # NEWER CLEAN STEPS MUST BE AT THE END OF THE LIST
 # ************************************************

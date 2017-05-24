@@ -109,21 +109,15 @@ ifeq ($(LOCAL_PROGUARD_ENABLED),disabled)
 LOCAL_PROGUARD_ENABLED :=
 endif
 
-ifdef LOCAL_PROGUARD_ENABLED
-proguard_jar_leaf := proguard.classes.jar
-else
-proguard_jar_leaf := noproguard.classes.jar
-endif
-
 full_classes_compiled_jar := $(intermediates.COMMON)/$(full_classes_compiled_jar_leaf)
-full_classes_desugar_jar := $(intermediates.COMMON)/desugar.classes.jar
+full_classes_desugar_jar := $(intermediates.COMMON)/classes-desugar.jar
 jarjar_leaf := classes-jarjar.jar
 full_classes_jarjar_jar := $(intermediates.COMMON)/$(jarjar_leaf)
 emma_intermediates_dir := $(intermediates.COMMON)/emma_out
 # emma is hardcoded to use the leaf name of its input for the output file --
 # only the output directory can be changed
 full_classes_emma_jar := $(emma_intermediates_dir)/lib/$(jarjar_leaf)
-full_classes_proguard_jar := $(intermediates.COMMON)/$(proguard_jar_leaf)
+full_classes_proguard_jar := $(intermediates.COMMON)/classes-proguard.jar
 built_dex_intermediate := $(intermediates.COMMON)/$(built_dex_intermediate_leaf)/classes.dex
 full_classes_stubs_jar := $(intermediates.COMMON)/stubs.jar
 
@@ -346,13 +340,13 @@ endif
 ifndef LOCAL_CHECKED_MODULE
 ifdef full_classes_jar
 ifdef LOCAL_JACK_ENABLED
-LOCAL_CHECKED_MODULE := $(jack_check_timestamp)
-else
-ifeq ($(LOCAL_IS_STATIC_JAVA_LIBRARY),true)
+ifeq ($(LOCAL_JACK_ENABLED),javac_frontend)
 LOCAL_CHECKED_MODULE := $(full_classes_compiled_jar)
 else
-LOCAL_CHECKED_MODULE := $(built_dex)
+LOCAL_CHECKED_MODULE := $(jack_check_timestamp)
 endif
+else
+LOCAL_CHECKED_MODULE := $(full_classes_compiled_jar)
 endif
 endif
 endif
@@ -411,15 +405,7 @@ ifdef full_classes_jar
 # Droiddoc isn't currently able to generate stubs for modules, so we're just
 # allowing it to use the classes.jar as the "stubs" that would be use to link
 # against, for the cases where someone needs the jar to link against.
-# - Use the classes.jar instead of the handful of other intermediates that
-#   we have, because it's the most processed, but still hasn't had dex run on
-#   it, so it's closest to what's on the device.
-# - This extra copy, with the dependency on LOCAL_BUILT_MODULE allows the
-#   PRIVATE_ vars to be preserved.
-$(full_classes_stubs_jar): PRIVATE_SOURCE_FILE := $(full_classes_jar)
-$(full_classes_stubs_jar) : $(full_classes_jar) | $(ACP)
-	@echo Copying $(PRIVATE_SOURCE_FILE)
-	$(hide) $(ACP) -fp $(PRIVATE_SOURCE_FILE) $@
+$(eval $(call copy-one-file,$(full_classes_jar),$(full_classes_stubs_jar)))
 ALL_MODULES.$(LOCAL_MODULE).STUBS := $(full_classes_stubs_jar)
 
 # The layers file allows you to enforce a layering between java packages.
@@ -432,7 +418,13 @@ $(full_classes_compiled_jar): PRIVATE_WARNINGS_ENABLE := $(LOCAL_WARNINGS_ENABLE
 # This intentionally depends on java_sources, not all_java_sources.
 # Deps for generated source files must be handled separately,
 # via deps on the target that generates the sources.
-$(full_classes_compiled_jar): PRIVATE_JAVACFLAGS := $(GLOBAL_JAVAC_DEBUG_FLAGS) $(LOCAL_JAVACFLAGS)
+
+# If error prone is enabled then add LOCAL_ERROR_PRONE_FLAGS to LOCAL_JAVACFLAGS
+ifeq ($(RUN_ERROR_PRONE),true)
+LOCAL_JAVACFLAGS += $(LOCAL_ERROR_PRONE_FLAGS)
+endif
+
+$(full_classes_compiled_jar): PRIVATE_JAVACFLAGS := $(GLOBAL_JAVAC_DEBUG_FLAGS) $(LOCAL_JAVACFLAGS) $(annotation_processor_flags)
 $(full_classes_compiled_jar): PRIVATE_JAR_EXCLUDE_FILES := $(LOCAL_JAR_EXCLUDE_FILES)
 $(full_classes_compiled_jar): PRIVATE_JAR_PACKAGES := $(LOCAL_JAR_PACKAGES)
 $(full_classes_compiled_jar): PRIVATE_JAR_EXCLUDE_PACKAGES := $(LOCAL_JAR_EXCLUDE_PACKAGES)
@@ -445,9 +437,10 @@ $(full_classes_compiled_jar): \
         $(layers_file) \
         $(RenderScript_file_stamp) \
         $(proto_java_sources_file_stamp) \
+        $(annotation_processor_deps) \
         $(NORMALIZE_PATH) \
-        $(JAVAC_FILTER) \
-        $(LOCAL_ADDITIONAL_DEPENDENCIES)
+        $(LOCAL_ADDITIONAL_DEPENDENCIES) \
+        | $(SOONG_JAVAC_WRAPPER)
 	$(transform-java-to-classes.jar)
 
 javac-check : $(full_classes_compiled_jar)
@@ -455,7 +448,7 @@ javac-check-$(LOCAL_MODULE) : $(full_classes_compiled_jar)
 
 my_desugaring :=
 ifndef LOCAL_JACK_ENABLED
-ifeq ($(LOCAL_JAVA_LANGUAGE_VERSION),1.8)
+ifndef LOCAL_IS_STATIC_JAVA_LIBRARY
 my_desugaring := true
 $(full_classes_desugar_jar): PRIVATE_DX_FLAGS := $(LOCAL_DX_FLAGS)
 $(full_classes_desugar_jar): $(full_classes_compiled_jar) $(DESUGAR)
@@ -467,16 +460,14 @@ ifndef my_desugaring
 full_classes_desugar_jar := $(full_classes_compiled_jar)
 endif
 
-# Run jarjar if necessary, otherwise just copy the file.
+# Run jarjar if necessary
 ifneq ($(strip $(LOCAL_JARJAR_RULES)),)
 $(full_classes_jarjar_jar): PRIVATE_JARJAR_RULES := $(LOCAL_JARJAR_RULES)
 $(full_classes_jarjar_jar): $(full_classes_desugar_jar) $(LOCAL_JARJAR_RULES) | $(JARJAR)
 	@echo JarJar: $@
 	$(hide) java -jar $(JARJAR) process $(PRIVATE_JARJAR_RULES) $< $@
 else
-$(full_classes_jarjar_jar): $(full_classes_desugar_jar) | $(ACP)
-	@echo Copying: $@
-	$(hide) $(ACP) -fp $< $@
+full_classes_jarjar_jar := $(full_classes_desugar_jar)
 endif
 
 ifeq ($(LOCAL_EMMA_INSTRUMENT),true)
@@ -497,20 +488,16 @@ $(full_classes_emma_jar): $(full_classes_jarjar_jar) | $(EMMA_JAR)
 	$(transform-classes.jar-to-emma)
 
 else
-$(full_classes_emma_jar): $(full_classes_jarjar_jar)
-	@echo Copying: $@
-	$(copy-file-to-target)
+full_classes_emma_jar := $(full_classes_jarjar_jar)
 endif
 
-# Keep a copy of the jar just before proguard processing.
 # TODO: this should depend on full_classes_emma_jar once coverage works again
-$(full_classes_jar): $(full_classes_jarjar_jar) | $(ACP)
-	@echo Copying: $@
-	$(hide) $(ACP) -fp $< $@
+full_classes_pre_proguard_jar := $(full_classes_jarjar_jar)
 
-$(call define-jar-to-toc-rule, $(full_classes_jar))
+# Keep a copy of the jar just before proguard processing.
+$(eval $(call copy-one-file,$(full_classes_pre_proguard_jar),$(intermediates.COMMON)/classes-pre-proguard.jar))
 
-# Run proguard if necessary, otherwise just copy the file.
+# Run proguard if necessary
 ifdef LOCAL_PROGUARD_ENABLED
 ifneq ($(filter-out full custom nosystem obfuscation optimization shrinktests,$(LOCAL_PROGUARD_ENABLED)),)
     $(warning while processing: $(LOCAL_MODULE))
@@ -639,16 +626,18 @@ endif
 $(full_classes_proguard_jar): PRIVATE_PROGUARD_INJAR_FILTERS := $(proguard_injar_filters)
 $(full_classes_proguard_jar): PRIVATE_EXTRA_INPUT_JAR := $(extra_input_jar)
 $(full_classes_proguard_jar): PRIVATE_PROGUARD_FLAGS := $(legacy_proguard_flags) $(common_proguard_flags) $(LOCAL_PROGUARD_FLAGS)
-$(full_classes_proguard_jar) : $(full_classes_jar) $(extra_input_jar) $(my_support_library_sdk_raise) $(common_proguard_flag_files) $(proguard_flag_files) | $(PROGUARD)
+$(full_classes_proguard_jar) : $(full_classes_pre_proguard_jar) $(extra_input_jar) $(my_support_library_sdk_raise) $(common_proguard_flag_files) $(proguard_flag_files) | $(PROGUARD)
 	$(call transform-jar-to-proguard)
 
 else  # LOCAL_PROGUARD_ENABLED not defined
-$(full_classes_proguard_jar) : $(full_classes_jar) | $(ACP)
-	@echo Copying: $@
-	$(hide) $(ACP) -fp $< $@
-
+full_classes_proguard_jar := $(full_classes_pre_proguard_jar)
 endif # LOCAL_PROGUARD_ENABLED defined
 
+$(eval $(call copy-one-file,$(full_classes_proguard_jar),$(full_classes_jar)))
+
+$(call define-jar-to-toc-rule, $(full_classes_jar))
+
+ifneq ($(LOCAL_IS_STATIC_JAVA_LIBRARY),true)
 ifndef LOCAL_JACK_ENABLED
 $(built_dex_intermediate): PRIVATE_DX_FLAGS := $(LOCAL_DX_FLAGS)
 # If you instrument class files that have local variable debug information in
@@ -660,21 +649,25 @@ $(built_dex_intermediate): PRIVATE_DX_FLAGS := $(LOCAL_DX_FLAGS)
 ifeq ($(LOCAL_EMMA_INSTRUMENT),true)
 $(built_dex_intermediate): PRIVATE_DX_FLAGS += --no-locals
 endif
-$(built_dex_intermediate): $(full_classes_proguard_jar) $(DX)
+$(built_dex_intermediate): $(full_classes_jar) $(DX)
 	$(transform-classes.jar-to-dex)
 endif # LOCAL_JACK_ENABLED is disabled
 
-$(built_dex): $(built_dex_intermediate) | $(ACP)
+$(built_dex): $(built_dex_intermediate)
 	@echo Copying: $@
 	$(hide) mkdir -p $(dir $@)
 	$(hide) rm -f $(dir $@)/classes*.dex
-	$(hide) $(ACP) -fp $(dir $<)/classes*.dex $(dir $@)
+	$(hide) cp -fp $(dir $<)/classes*.dex $(dir $@)
+
+java-dex: $(built_dex)
+
+endif # !LOCAL_IS_STATIC_JAVA_LIBRARY
 
 findbugs_xml := $(intermediates.COMMON)/findbugs.xml
 $(findbugs_xml): PRIVATE_AUXCLASSPATH := $(addprefix -auxclasspath ,$(strip \
     $(call normalize-path-list,$(filter %.jar,$(full_java_libs)))))
 $(findbugs_xml): PRIVATE_FINDBUGS_FLAGS := $(LOCAL_FINDBUGS_FLAGS)
-$(findbugs_xml) : $(full_classes_jar) $(filter %.xml, $(LOCAL_FINDBUGS_FLAGS))
+$(findbugs_xml) : $(full_classes_pre_proguard_jar) $(filter %.xml, $(LOCAL_FINDBUGS_FLAGS))
 	@echo Findbugs: $@
 	$(hide) $(FINDBUGS) -textui -effort:min -xml:withMessages \
 		$(PRIVATE_AUXCLASSPATH) $(PRIVATE_FINDBUGS_FLAGS) \
@@ -741,13 +734,14 @@ else  # LOCAL_PROGUARD_ENABLED not defined
 $(LOCAL_INTERMEDIATE_TARGETS): PRIVATE_JACK_PROGUARD_FLAGS :=
 endif # LOCAL_PROGUARD_ENABLED defined
 
-$(LOCAL_INTERMEDIATE_TARGETS): PRIVATE_JACK_FLAGS := $(GLOBAL_JAVAC_DEBUG_FLAGS) $(LOCAL_JACK_FLAGS)
+$(LOCAL_INTERMEDIATE_TARGETS): PRIVATE_JACK_FLAGS := $(GLOBAL_JAVAC_DEBUG_FLAGS) $(LOCAL_JACK_FLAGS) $(annotation_processor_flags)
 $(LOCAL_INTERMEDIATE_TARGETS): PRIVATE_JACK_VERSION := $(LOCAL_JACK_VERSION)
 
 jack_all_deps := $(java_sources) $(java_resource_sources) $(full_jack_deps) \
         $(jar_manifest_file) $(layers_file) $(RenderScript_file_stamp) \
         $(common_proguard_flag_files) $(proguard_flag_files) \
-        $(proto_java_sources_file_stamp) $(LOCAL_ADDITIONAL_DEPENDENCIES) $(LOCAL_JARJAR_RULES) \
+        $(proto_java_sources_file_stamp) $(annotation_processor_deps) \
+        $(LOCAL_ADDITIONAL_DEPENDENCIES) $(LOCAL_JARJAR_RULES) \
         $(NORMALIZE_PATH) $(JACK_DEFAULT_ARGS) $(JACK)
 
 $(jack_check_timestamp): $(jack_all_deps) | setup-jack-server
@@ -781,6 +775,26 @@ $(built_dex_intermediate): PRIVATE_JACK_COVERAGE_OPTIONS := \
 else
 $(built_dex_intermediate): PRIVATE_JACK_COVERAGE_OPTIONS :=
 endif
+
+# Compiling with javac to jar, then converting jar to dex with jack
+ifeq ($(LOCAL_JACK_ENABLED),javac_frontend)
+
+# PRIVATE_EXTRA_JAR_ARGS and source files were already handled during javac
+$(built_dex_intermediate): PRIVATE_EXTRA_JAR_ARGS :=
+$(built_dex_intermediate): PRIVATE_JAVA_SOURCES :=
+$(built_dex_intermediate): PRIVATE_SOURCE_INTERMEDIATES_DIR :=
+$(built_dex_intermediate): PRIVATE_HAS_PROTO_SOURCES :=
+$(built_dex_intermediate): PRIVATE_HAS_RS_SOURCES :=
+
+# Incremental compilation is not supported when mixing javac and jack
+$(built_dex_intermediate): PRIVATE_JACK_INCREMENTAL_DIR :=
+
+# Pass output of javac to jack
+$(built_dex_intermediate): PRIVATE_JACK_IMPORT_JAR := $(full_classes_compiled_jar)
+$(built_dex_intermediate): $(full_classes_compiled_jar)
+else # LOCAL_JACK_ENABLED != javac_frontend
+$(built_dex_intermediate): PRIVATE_JACK_IMPORT_JAR :=
+endif # LOCAL_JACK_ENABLED != javac_frontend
 
 $(built_dex_intermediate): PRIVATE_JACK_PLUGIN_PATH := $(LOCAL_JACK_PLUGIN_PATH)
 $(built_dex_intermediate): PRIVATE_JACK_PLUGIN := $(LOCAL_JACK_PLUGIN)

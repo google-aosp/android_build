@@ -20,6 +20,7 @@
 PRODUCT_PACKAGES += \
     adb \
     adbd \
+    android.hardware.configstore@1.0-service \
     android.hidl.allocator@1.0-service \
     android.hidl.memory@1.0-impl \
     atrace \
@@ -32,8 +33,6 @@ PRODUCT_PACKAGES += \
     dumpsys \
     fastboot \
     gralloc.default \
-    grep \
-    gzip \
     healthd \
     hwservicemanager \
     init \
@@ -70,32 +69,25 @@ PRODUCT_PACKAGES += \
     logcat \
     logwrapper \
     lshal \
-    mkshrc \
-    reboot \
     recovery \
     service \
     servicemanager \
-    sh \
+    shell_and_utilities \
     surfaceflinger \
     tombstoned \
-    toolbox \
-    toybox \
     tzdatacheck \
 
 # SELinux packages
 PRODUCT_PACKAGES += \
-    file_contexts.bin \
-    nonplat_file_contexts \
     nonplat_mac_permissions.xml \
     nonplat_property_contexts \
     nonplat_seapp_contexts \
     nonplat_service_contexts \
-    plat_file_contexts \
     plat_mac_permissions.xml \
     plat_property_contexts \
     plat_seapp_contexts \
     plat_service_contexts \
-    selinux_version
+    selinux_policy
 
 # AID Generation for
 # <pwd.h> and <grp.h>

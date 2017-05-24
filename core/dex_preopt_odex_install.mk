@@ -42,7 +42,7 @@ endif
 # if installing into system, and odex are being installed into system_other, don't strip
 ifeq ($(BOARD_USES_SYSTEM_OTHER_ODEX),true)
 ifeq ($(LOCAL_DEX_PREOPT),true)
-ifneq ($(filter $(foreach f,$(SYSTEM_OTHER_ODEX_FILTER),$(TARGET_OUT)/$(f)),$(my_module_path)),)
+ifneq ($(call install-on-system-other, $(my_module_path)),)
 LOCAL_DEX_PREOPT := nostripping
 endif
 endif
@@ -128,17 +128,17 @@ my_built_profile := $(dir $(LOCAL_BUILT_MODULE))/profile.prof
 my_dex_location := $(patsubst $(PRODUCT_OUT)%,%,$(LOCAL_INSTALLED_MODULE))
 $(built_odex): $(my_built_profile)
 $(built_odex): PRIVATE_PROFILE_PREOPT_FLAGS := --profile-file=$(my_built_profile)
-$(my_built_profile): PRIVATE_INSTALLED_MODULE := $(LOCAL_INSTALLED_MODULE)
+$(my_built_profile): PRIVATE_BUILT_MODULE := $(LOCAL_BUILT_MODULE)
 $(my_built_profile): PRIVATE_DEX_LOCATION := $(my_dex_location)
 $(my_built_profile): PRIVATE_SOURCE_CLASSES := $(LOCAL_DEX_PREOPT_PROFILE_CLASS_LISTING)
 $(my_built_profile): $(LOCAL_DEX_PREOPT_PROFILE_CLASS_LISTING)
 $(my_built_profile): $(PROFMAN)
-$(my_built_profile): $(LOCAL_INSTALLED_MODULE)
+$(my_built_profile): $(LOCAL_BUILT_MODULE)
 $(my_built_profile):
 	$(hide) mkdir -p $(dir $@)
 	ANDROID_LOG_TAGS="*:e" $(PROFMAN) \
 		--create-profile-from=$(PRIVATE_SOURCE_CLASSES) \
-		--apk=$(PRIVATE_INSTALLED_MODULE) \
+		--apk=$(PRIVATE_BUILT_MODULE) \
 		--dex-location=$(PRIVATE_DEX_LOCATION) \
 		--reference-profile-file=$@
 else
@@ -151,6 +151,18 @@ ifndef LOCAL_DEX_PREOPT_FLAGS
 LOCAL_DEX_PREOPT_FLAGS := $(PRODUCT_DEX_PREOPT_DEFAULT_FLAGS)
 endif
 endif
+
+ifneq (,$(filter $(PRODUCT_SYSTEM_SERVER_JARS) $(PRODUCT_SYSTEM_SERVER_APPS),$(LOCAL_MODULE)))
+  # Jars of system server, and apps loaded into system server should be
+  # compiled with the 'speed' compiler filter.
+  LOCAL_DEX_PREOPT_FLAGS += --compiler-filter=speed
+else
+  # If no compiler filter is specified, default to 'quicken' to save on storage.
+  ifeq (,$(filter --compiler-filter=%, $(LOCAL_DEX_PREOPT_FLAGS)))
+    LOCAL_DEX_PREOPT_FLAGS += --compiler-filter=quicken
+  endif
+endif
+
 $(built_odex): PRIVATE_DEX_PREOPT_FLAGS := $(LOCAL_DEX_PREOPT_FLAGS)
 $(built_vdex): $(built_odex)
 $(built_art): $(built_odex)
@@ -169,7 +181,7 @@ DEXPREOPT.$(LOCAL_MODULE).DEX_PREOPT := $(LOCAL_DEX_PREOPT)
 DEXPREOPT.$(LOCAL_MODULE).MULTILIB := $(LOCAL_MULTILIB)
 DEXPREOPT.$(LOCAL_MODULE).DEX_PREOPT_FLAGS := $(LOCAL_DEX_PREOPT_FLAGS)
 DEXPREOPT.$(LOCAL_MODULE).PRIVILEGED_MODULE := $(LOCAL_PRIVILEGED_MODULE)
-DEXPREOPT.$(LOCAL_MODULE).PROPRIETARY_MODULE := $(LOCAL_PROPRIETARY_MODULE)
+DEXPREOPT.$(LOCAL_MODULE).VENDOR_MODULE := $(LOCAL_VENDOR_MODULE)
 DEXPREOPT.$(LOCAL_MODULE).TARGET_ARCH := $(LOCAL_MODULE_TARGET_ARCH)
 DEXPREOPT.$(LOCAL_MODULE).INSTALLED := $(installed_odex)
 DEXPREOPT.$(LOCAL_MODULE).INSTALLED_STRIPPED := $(LOCAL_INSTALLED_MODULE)

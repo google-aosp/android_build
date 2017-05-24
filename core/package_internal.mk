@@ -100,7 +100,34 @@ package_resource_overlays := $(strip \
     $(wildcard $(foreach dir, $(DEVICE_PACKAGE_OVERLAYS), \
       $(addprefix $(dir)/, $(LOCAL_RESOURCE_DIR)))))
 
+enforce_rro_enabled :=
+ifneq ($(PRODUCT_ENFORCE_RRO_TARGETS),)
+  ifneq ($(package_resource_overlays),)
+    ifeq ($(PRODUCT_ENFORCE_RRO_TARGETS),*)
+      enforce_rro_enabled := true
+    else ifneq (,$(filter $(LOCAL_PACKAGE_NAME), $(PRODUCT_ENFORCE_RRO_TARGETS)))
+      enforce_rro_enabled := true
+    endif
+  endif
+
+  ifdef enforce_rro_enabled
+    ifeq (,$(LOCAL_MODULE_PATH))
+      ifeq (true,$(LOCAL_PROPRIETARY_MODULE))
+        enforce_rro_enabled :=
+      else ifeq (true,$(LOCAL_OEM_MODULE))
+        enforce_rro_enabled :=
+      else ifeq (true,$(LOCAL_ODM_MODULE))
+        enforce_rro_enabled :=
+      endif
+    else ifeq ($(filter $(TARGET_OUT)/%,$(LOCAL_MODULE_PATH)),)
+      enforce_rro_enabled :=
+    endif
+  endif
+endif
+
+ifndef enforce_rro_enabled
 LOCAL_RESOURCE_DIR := $(package_resource_overlays) $(LOCAL_RESOURCE_DIR)
+endif
 
 all_assets := $(strip \
     $(foreach dir, $(LOCAL_ASSET_DIR), \
@@ -340,8 +367,23 @@ endif  # LOCAL_DATA_BINDING
 ifeq ($(need_compile_res),true)
 ifdef LOCAL_USE_AAPT2
 my_compiled_res_base_dir := $(intermediates)/flat-res
+renderscript_target_api :=
+ifneq (,$(LOCAL_RENDERSCRIPT_TARGET_API))
+renderscript_target_api := $(LOCAL_RENDERSCRIPT_TARGET_API)
+else
+ifneq (,$(LOCAL_SDK_VERSION))
+# Set target-api for LOCAL_SDK_VERSIONs other than current.
+ifneq (,$(filter-out current system_current test_current, $(LOCAL_SDK_VERSION)))
+renderscript_target_api := $(LOCAL_SDK_VERSION)
+endif
+endif  # LOCAL_SDK_VERSION is set
+endif  # LOCAL_RENDERSCRIPT_TARGET_API is set
+ifneq (,$(renderscript_target_api))
+ifneq ($(call math_gt_or_eq,$(renderscript_target_api),21),true)
 my_generated_res_dirs := $(rs_generated_res_dir)
 my_generated_res_dirs_deps := $(RenderScript_file_stamp)
+endif  # renderscript_target_api < 21
+endif  # renderscript_target_api is set
 # Add AAPT2 link specific flags.
 $(my_res_package): PRIVATE_AAPT_FLAGS := $(LOCAL_AAPT_FLAGS) --no-static-lib-packages
 include $(BUILD_SYSTEM)/aapt2.mk
@@ -457,7 +499,7 @@ endif # LOCAL_NO_STANDARD_LIBRARIES
 ifneq ($(full_classes_jar),)
 $(LOCAL_BUILT_MODULE): PRIVATE_DEX_FILE := $(built_dex)
 # Use the jarjar processed arhive as the initial package file.
-$(LOCAL_BUILT_MODULE): PRIVATE_SOURCE_ARCHIVE := $(full_classes_jarjar_jar)
+$(LOCAL_BUILT_MODULE): PRIVATE_SOURCE_ARCHIVE := $(full_classes_pre_proguard_jar)
 $(LOCAL_BUILT_MODULE): $(built_dex)
 else
 $(LOCAL_BUILT_MODULE): PRIVATE_DEX_FILE :=
@@ -645,3 +687,27 @@ endif # skip_definition
 
 # Reset internal variables.
 all_res_assets :=
+
+ifdef enforce_rro_enabled
+  ifdef LOCAL_EXPORT_PACKAGE_RESOURCES
+    enforce_rro_use_res_lib := true
+  else
+    enforce_rro_use_res_lib := false
+  endif
+
+  ifdef LOCAL_MANIFEST_PACKAGE_NAME
+    enforce_rro_is_manifest_package_name := true
+    enforce_rro_manifest_package_info := $(LOCAL_MANIFEST_PACKAGE_NAME)
+  else
+    enforce_rro_is_manifest_package_name := false
+    enforce_rro_manifest_package_info := $(full_android_manifest)
+  endif
+
+$(call append_enforce_rro_sources, \
+    $(my_register_name), \
+    $(enforce_rro_is_manifest_package_name), \
+    $(enforce_rro_manifest_package_info), \
+    $(enforce_rro_use_res_lib), \
+    $(package_resource_overlays) \
+    )
+endif  # enforce_rro_enabled

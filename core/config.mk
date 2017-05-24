@@ -497,8 +497,9 @@ MAINDEXCLASSES := $(HOST_OUT_EXECUTABLES)/mainDexClasses
 
 SOONG_ZIP := $(SOONG_HOST_OUT_EXECUTABLES)/soong_zip
 ZIP2ZIP := $(SOONG_HOST_OUT_EXECUTABLES)/zip2zip
+FILESLIST := $(SOONG_HOST_OUT_EXECUTABLES)/fileslist
 
-JAVAC_FILTER := $(SOONG_HOST_OUT_EXECUTABLES)/soong_javac_filter
+SOONG_JAVAC_WRAPPER := $(SOONG_HOST_OUT_EXECUTABLES)/soong_javac_wrapper
 
 # Always use prebuilts for ckati and makeparallel
 prebuilt_build_tools := prebuilts/build-tools
@@ -633,6 +634,7 @@ BOOT_SIGNER := $(HOST_OUT_EXECUTABLES)/boot_signer
 FUTILITY := $(HOST_OUT_EXECUTABLES)/futility-host
 VBOOT_SIGNER := prebuilts/misc/scripts/vboot_signer/vboot_signer.sh
 FEC := $(HOST_OUT_EXECUTABLES)/fec
+BRILLO_UPDATE_PAYLOAD := $(HOST_OUT_EXECUTABLES)/brillo_update_payload
 
 DEXDUMP := $(HOST_OUT_EXECUTABLES)/dexdump2$(BUILD_EXECUTABLE_SUFFIX)
 PROFMAN := $(HOST_OUT_EXECUTABLES)/profman
@@ -817,6 +819,7 @@ ANDROID_WARNING_DISALLOWED_PROJECTS := \
     art/% \
     bionic/% \
     external/fio/% \
+    hardware/interfaces/% \
 
 define find_warning_disallowed_projects
     $(filter $(ANDROID_WARNING_DISALLOWED_PROJECTS),$(1)/)
@@ -851,7 +854,7 @@ dont_bother_goals := clean clobber dataclean installclean \
     userdataimage-nodeps userdatatarball-nodeps \
     cacheimage-nodeps \
     bptimage-nodeps \
-    vendorimage-nodeps \
+    vnod vendorimage-nodeps \
     systemotherimage-nodeps \
     ramdisk-nodeps \
     bootimage-nodeps \
