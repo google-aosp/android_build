@@ -37,6 +37,7 @@ PRODUCT_PACKAGES += \
     ExactCalculator \
     ExternalStorageProvider \
     FusedLocation \
+    Gello \
     InputDevices \
     KeyChain \
     Keyguard \
