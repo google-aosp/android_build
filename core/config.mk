@@ -129,11 +129,7 @@ BUILD_HOST_DALVIK_STATIC_JAVA_LIBRARY := $(BUILD_SYSTEM)/host_dalvik_static_java
 # Parse out any modifier targets.
 # ###############################################################
 
-# The 'showcommands' goal says to show the full command
-# lines being executed, instead of a short message about
-# the kind of operation being done.
-SHOW_COMMANDS:= $(filter showcommands,$(MAKECMDGOALS))
-hide := $(if $(SHOW_COMMANDS),,@)
+hide := @
 
 ################################################################
 # Tools needed in product configuration makefiles.
@@ -492,7 +488,16 @@ LLVM_RS_CC := $(HOST_OUT_EXECUTABLES)/llvm-rs-cc
 BCC_COMPAT := $(HOST_OUT_EXECUTABLES)/bcc_compat
 DEPMOD := $(HOST_OUT_EXECUTABLES)/depmod
 
+#TODO: use a smaller -Xmx value for most libraries;
+#      only core.jar and framework.jar need a heap this big.
+ifndef DX_ALT_JAR
 DX := $(HOST_OUT_EXECUTABLES)/dx
+DX_COMMAND := $(DX) -JXms16M -JXmx2048M
+else
+DX := $(DX_ALT_JAR)
+DX_COMMAND := java -Xms16M -Xmx2048M -jar $(DX)
+endif
+
 MAINDEXCLASSES := $(HOST_OUT_EXECUTABLES)/mainDexClasses
 
 SOONG_ZIP := $(SOONG_HOST_OUT_EXECUTABLES)/soong_zip
@@ -590,9 +595,11 @@ FS_GET_STATS := $(HOST_OUT_EXECUTABLES)/fs_get_stats$(HOST_EXECUTABLE_SUFFIX)
 ifeq ($(TARGET_USES_MKE2FS),true)
 MAKE_EXT4FS := $(HOST_OUT_EXECUTABLES)/mke2fs$(HOST_EXECUTABLE_SUFFIX)
 MKEXTUSERIMG := $(HOST_OUT_EXECUTABLES)/mkuserimg_mke2fs.sh
+MKE2FS_CONF := system/extras/ext4_utils/mke2fs.conf
 else
 MAKE_EXT4FS := $(HOST_OUT_EXECUTABLES)/make_ext4fs$(HOST_EXECUTABLE_SUFFIX)
 MKEXTUSERIMG := $(HOST_OUT_EXECUTABLES)/mkuserimg.sh
+MKE2FS_CONF :=
 endif
 BLK_ALLOC_TO_BASE_FS := $(HOST_OUT_EXECUTABLES)/blk_alloc_to_base_fs$(HOST_EXECUTABLE_SUFFIX)
 MAKE_SQUASHFS := $(HOST_OUT_EXECUTABLES)/mksquashfs$(HOST_EXECUTABLE_SUFFIX)
@@ -653,13 +660,21 @@ COLUMN:= column
 
 # We may not have the right JAVA_HOME/PATH set up yet when this is run from envsetup.sh.
 ifneq ($(CALLED_FROM_SETUP),true)
-HOST_JDK_TOOLS_JAR:= $(shell $(BUILD_SYSTEM)/find-jdk-tools-jar.sh)
+
+# Path to tools.jar, or empty if EXPERIMENTAL_USE_OPENJDK9 is set
+HOST_JDK_TOOLS_JAR :=
+# TODO: Remove HOST_JDK_TOOLS_JAR and all references to it once OpenJDK 8
+# toolchains are no longer supported (i.e. when what is now
+# EXPERIMENTAL_USE_OPENJDK9 becomes the standard). http://b/38418220
+ifeq ($(EXPERIMENTAL_USE_OPENJDK9),)
+HOST_JDK_TOOLS_JAR := $(shell $(BUILD_SYSTEM)/find-jdk-tools-jar.sh)
 
 ifneq ($(HOST_JDK_TOOLS_JAR),)
 ifeq ($(wildcard $(HOST_JDK_TOOLS_JAR)),)
 $(error Error: could not find jdk tools.jar at $(HOST_JDK_TOOLS_JAR), please check if your JDK was installed correctly)
 endif
 endif
+endif # ifeq ($(EXPERIMENTAL_USE_OPENJDK9),)
 
 # Is the host JDK 64-bit version?
 HOST_JDK_IS_64BIT_VERSION :=
@@ -675,10 +690,24 @@ else
 MD5SUM:=md5sum
 endif
 
-APICHECK_CLASSPATH := $(HOST_JDK_TOOLS_JAR)
-APICHECK_CLASSPATH := $(APICHECK_CLASSPATH):$(HOST_OUT_JAVA_LIBRARIES)/doclava$(COMMON_JAVA_PACKAGE_SUFFIX)
-APICHECK_CLASSPATH := $(APICHECK_CLASSPATH):$(HOST_OUT_JAVA_LIBRARIES)/jsilver$(COMMON_JAVA_PACKAGE_SUFFIX)
+APICHECK_CLASSPATH_ENTRIES := \
+    $(HOST_OUT_JAVA_LIBRARIES)/doclava$(COMMON_JAVA_PACKAGE_SUFFIX) \
+    $(HOST_OUT_JAVA_LIBRARIES)/jsilver$(COMMON_JAVA_PACKAGE_SUFFIX) \
+    $(HOST_JDK_TOOLS_JAR) \
+    )
+APICHECK_CLASSPATH := $(subst $(space),:,$(strip $(APICHECK_CLASSPATH_ENTRIES)))
+
 APICHECK_COMMAND := $(APICHECK) -JXmx1024m -J"classpath $(APICHECK_CLASSPATH)"
+
+# Boolean variable determining if Treble is fully enabled
+PRODUCT_FULL_TREBLE := false
+ifneq ($(PRODUCT_FULL_TREBLE_OVERRIDE),)
+  PRODUCT_FULL_TREBLE := $(PRODUCT_FULL_TREBLE_OVERRIDE)
+else ifeq ($(PRODUCT_SHIPPING_API_LEVEL),)
+  #$(warning no product shipping level defined)
+else ifneq ($(call math_gt_or_eq,$(PRODUCT_SHIPPING_API_LEVEL),26),)
+  PRODUCT_FULL_TREBLE := true
+endif
 
 # The default key if not set as LOCAL_CERTIFICATE
 ifdef PRODUCT_DEFAULT_DEV_CERTIFICATE
@@ -791,10 +820,10 @@ endif
 RS_PREBUILT_CLCORE := prebuilts/sdk/renderscript/lib/$(TARGET_ARCH)/librsrt_$(TARGET_ARCH).bc
 RS_PREBUILT_COMPILER_RT := prebuilts/sdk/renderscript/lib/$(TARGET_ARCH)/libcompiler_rt.a
 ifeq (true,$(TARGET_IS_64_BIT))
-RS_PREBUILT_LIBPATH := -L prebuilts/ndk/current/platforms/android-21/arch-$(TARGET_ARCH)/usr/lib64 \
-                       -L prebuilts/ndk/current/platforms/android-21/arch-$(TARGET_ARCH)/usr/lib
+RS_PREBUILT_LIBPATH := -L prebuilts/ndk/r10/platforms/android-21/arch-$(TARGET_ARCH)/usr/lib64 \
+                       -L prebuilts/ndk/r10/platforms/android-21/arch-$(TARGET_ARCH)/usr/lib
 else
-RS_PREBUILT_LIBPATH := -L prebuilts/ndk/current/platforms/android-9/arch-$(TARGET_ARCH)/usr/lib
+RS_PREBUILT_LIBPATH := -L prebuilts/ndk/r10/platforms/android-9/arch-$(TARGET_ARCH)/usr/lib
 endif
 
 # API Level lists for Renderscript Compat lib.
@@ -847,8 +876,7 @@ endef
 
 # These goals don't need to collect and include Android.mks/CleanSpec.mks
 # in the source tree.
-dont_bother_goals := clean clobber dataclean installclean \
-    help out \
+dont_bother_goals := out \
     snod systemimage-nodeps \
     stnod systemtarball-nodeps \
     userdataimage-nodeps userdatatarball-nodeps \

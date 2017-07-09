@@ -110,6 +110,7 @@ LOCAL_PROGUARD_ENABLED :=
 endif
 
 full_classes_compiled_jar := $(intermediates.COMMON)/$(full_classes_compiled_jar_leaf)
+full_classes_processed_jar := $(intermediates.COMMON)/classes-processed.jar
 full_classes_desugar_jar := $(intermediates.COMMON)/classes-desugar.jar
 jarjar_leaf := classes-jarjar.jar
 full_classes_jarjar_jar := $(intermediates.COMMON)/$(jarjar_leaf)
@@ -446,18 +447,41 @@ $(full_classes_compiled_jar): \
 javac-check : $(full_classes_compiled_jar)
 javac-check-$(LOCAL_MODULE) : $(full_classes_compiled_jar)
 
+ifdef LOCAL_JAR_PROCESSOR
+# LOCAL_JAR_PROCESSOR_ARGS must be evaluated here to set up the rule-local
+# PRIVATE_JAR_PROCESSOR_ARGS variable, but $< and $@ are not available yet.
+# Set ${in} and ${out} so they can be referenced by LOCAL_JAR_PROCESSOR_ARGS
+# using deferred evaluation (LOCAL_JAR_PROCESSOR_ARGS = instead of :=).
+in := $(full_classes_compiled_jar)
+out := $(full_classes_processed_jar).tmp
+$(full_classes_processed_jar): PRIVATE_JAR_PROCESSOR_ARGS := $(LOCAL_JAR_PROCESSOR_ARGS)
+$(full_classes_processed_jar): PRIVATE_JAR_PROCESSOR := $(HOST_OUT_JAVA_LIBRARIES)/$(LOCAL_JAR_PROCESSOR).jar
+$(full_classes_processed_jar): PRIVATE_TMP_OUT := $(out)
+in :=
+out :=
+
+$(full_classes_processed_jar): $(full_classes_compiled_jar) $(LOCAL_JAR_PROCESSOR)
+	@echo Processing $@ with $(PRIVATE_JAR_PROCESSOR)
+	$(hide) rm -f $@ $(PRIVATE_TMP_OUT)
+	$(hide) java -jar $(PRIVATE_JAR_PROCESSOR) $(PRIVATE_JAR_PROCESSOR_ARGS)
+	$(hide) mv $(PRIVATE_TMP_OUT) $@
+
+else
+full_classes_processed_jar := $(full_classes_compiled_jar)
+endif
+
 my_desugaring :=
 ifndef LOCAL_JACK_ENABLED
 ifndef LOCAL_IS_STATIC_JAVA_LIBRARY
 my_desugaring := true
 $(full_classes_desugar_jar): PRIVATE_DX_FLAGS := $(LOCAL_DX_FLAGS)
-$(full_classes_desugar_jar): $(full_classes_compiled_jar) $(DESUGAR)
+$(full_classes_desugar_jar): $(full_classes_processed_jar) $(DESUGAR)
 	$(desugar-classes-jar)
 endif
 endif
 
 ifndef my_desugaring
-full_classes_desugar_jar := $(full_classes_compiled_jar)
+full_classes_desugar_jar := $(full_classes_processed_jar)
 endif
 
 # Run jarjar if necessary
@@ -609,7 +633,7 @@ extra_input_jar :=
 endif
 
 # If not using jack and building against the current SDK version then filter
-# out junit and android.test classes from the application that are to be
+# out the junit, android.test and c.a.i.u.Predicate classes that are to be
 # removed from the Android API as part of b/30188076 but which are still
 # present in the Android API. This is to allow changes to be made to the
 # build to statically include those classes into the application without
@@ -618,7 +642,7 @@ proguard_injar_filters :=
 ifndef LOCAL_JACK_ENABLED
 ifdef LOCAL_SDK_VERSION
 ifeq (,$(filter-out current system_current test_current, $(LOCAL_SDK_VERSION)))
-proguard_injar_filters := (!junit/framework/**,!junit/runner/**,!android/test/**)
+proguard_injar_filters := (!junit/framework/**,!junit/runner/**,!android/test/**,!com/android/internal/util/*)
 endif
 endif
 endif

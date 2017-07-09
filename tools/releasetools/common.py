@@ -107,10 +107,15 @@ class ExternalError(RuntimeError):
   pass
 
 
-def Run(args, **kwargs):
-  """Create and return a subprocess.Popen object, printing the command
-  line on the terminal if -v was specified."""
-  if OPTIONS.verbose:
+def Run(args, verbose=None, **kwargs):
+  """Create and return a subprocess.Popen object.
+
+  Caller can specify if the command line should be printed. The global
+  OPTIONS.verbose will be used if not specified.
+  """
+  if verbose is None:
+    verbose = OPTIONS.verbose
+  if verbose:
     print("  running: ", " ".join(args))
   return subprocess.Popen(args, **kwargs)
 
@@ -486,7 +491,7 @@ def _BuildBootableImage(sourcedir, fs_config_file, info_dict=None,
 
   # AVB: if enabled, calculate and add hash to boot.img.
   if info_dict.get("board_avb_enable", None) == "true":
-    avbtool = os.getenv('AVBTOOL') or "avbtool"
+    avbtool = os.getenv('AVBTOOL') or OPTIONS.info_dict["avb_avbtool"]
     part_size = info_dict.get("boot_size", None)
     cmd = [avbtool, "add_hash_footer", "--image", img.name,
            "--partition_size", str(part_size), "--partition_name", "boot"]

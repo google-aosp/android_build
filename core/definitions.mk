@@ -846,10 +846,10 @@ endef
 ## Use echo-(warning|error) in a build rule
 ## Use pretty-(warning|error) instead of $(warning)/$(error)
 ###########################################################
-ESC_BOLD := \e[1m
-ESC_WARNING := \e[35m
-ESC_ERROR := \e[31m
-ESC_RESET := \e[0m
+ESC_BOLD := \033[1m
+ESC_WARNING := \033[35m
+ESC_ERROR := \033[31m
+ESC_RESET := \033[0m
 
 # $(1): path (and optionally line) information
 # $(2): message to print
@@ -1049,8 +1049,9 @@ $(hide) $(PRIVATE_CXX) -shared -Wl,-soname,$(notdir $@) -nostdlib \
 	$(dir $@)/$(notdir $(<:.bc=.o)) \
 	$(RS_PREBUILT_COMPILER_RT) \
 	-o $@ $(TARGET_GLOBAL_LDFLAGS) -Wl,--hash-style=sysv -L prebuilts/gcc/ \
-	$(RS_PREBUILT_LIBPATH) -L $(TARGET_OUT_INTERMEDIATE_LIBRARIES) \
-	-lRSSupport -lm -lc
+	$(RS_PREBUILT_LIBPATH) \
+	$(call intermediates-dir-for,SHARED_LIBRARIES,libRSSupport)/libRSSupport.so \
+	-lm -lc
 endef
 
 ###########################################################
@@ -2531,11 +2532,17 @@ define codename-or-sdk-to-sdk
 $(if $(filter $(1),$(PLATFORM_VERSION_CODENAME)),10000,$(1))
 endef
 
+# --add-opens is required because desugar reflects via java.lang.invoke.MethodHandles.Lookup
 define desugar-classes-jar
 @echo Desugar: $@
 @mkdir -p $(dir $@)
 $(hide) rm -f $@ $@.tmp
-$(hide) java -jar $(DESUGAR) \
+@rm -rf $(dir $@)/desugar_dumped_classes
+@mkdir $(dir $@)/desugar_dumped_classes
+$(hide) java \
+    $(if $(EXPERIMENTAL_USE_OPENJDK9),--add-opens java.base/java.lang.invoke=ALL-UNNAMED,) \
+    -Djdk.internal.lambda.dumpProxyClasses=$(abspath $(dir $@))/desugar_dumped_classes \
+    -jar $(DESUGAR) \
     $(addprefix --bootclasspath_entry ,$(call desugar-bootclasspath,$(PRIVATE_BOOTCLASSPATH))) \
     $(addprefix --classpath_entry ,$(PRIVATE_ALL_JAVA_LIBRARIES)) \
     --min_sdk_version $(call codename-or-sdk-to-sdk,$(PRIVATE_DEFAULT_APP_TARGET_SDK)) \
@@ -2546,14 +2553,11 @@ $(hide) java -jar $(DESUGAR) \
 endef
 
 
-#TODO: use a smaller -Xmx value for most libraries;
-#      only core.jar and framework.jar need a heap this big.
 define transform-classes.jar-to-dex
 @echo "target Dex: $(PRIVATE_MODULE)"
 @mkdir -p $(dir $@)
 $(hide) rm -f $(dir $@)classes*.dex
-$(hide) $(DX) \
-    -JXms16M -JXmx2048M \
+$(hide) $(DX_COMMAND) \
     --dex --output=$(dir $@) \
     --min-sdk-version=$(call codename-or-sdk-to-sdk,$(PRIVATE_DEFAULT_APP_TARGET_SDK)) \
     $(if $(NO_OPTIMIZE_DX), \
@@ -2690,10 +2694,14 @@ define sign-package
 $(call sign-package-arg,$@)
 endef
 
+# signapk uses internal APIs from sun.security.{pkcs,x509}; see http://b/37137869
 # $(1): the package file we are signing.
 define sign-package-arg
 $(hide) mv $(1) $(1).unsigned
-$(hide) java -Djava.library.path=$(SIGNAPK_JNI_LIBRARY_PATH) -jar $(SIGNAPK_JAR) \
+$(hide) java -Djava.library.path=$(SIGNAPK_JNI_LIBRARY_PATH) \
+    $(if $(EXPERIMENTAL_USE_OPENJDK9),--add-exports java.base/sun.security.pkcs=ALL-UNNAMED,) \
+    $(if $(EXPERIMENTAL_USE_OPENJDK9),--add-exports java.base/sun.security.x509=ALL-UNNAMED,) \
+    -jar $(SIGNAPK_JAR) \
     $(PRIVATE_CERTIFICATE) $(PRIVATE_PRIVATE_KEY) \
     $(PRIVATE_ADDITIONAL_CERTIFICATES) $(1).unsigned $(1).signed
 $(hide) mv $(1).signed $(1)
@@ -3231,11 +3239,146 @@ endef
 # Requires for each suite: my_compat_dist_$(suite) to be defined.
 define create-suite-dependencies
 $(foreach suite, $(LOCAL_COMPATIBILITY_SUITE), \
-  $(eval my_compat_files_$(suite) := $(call copy-many-files, $(my_compat_dist_$(suite)))) \
   $(eval COMPATIBILITY.$(suite).FILES := \
-    $(COMPATIBILITY.$(suite).FILES) $(my_compat_files_$(suite))) \
-  $(eval $(my_all_targets) : $(my_compat_files_$(suite))))
+    $(COMPATIBILITY.$(suite).FILES) $(foreach f,$(my_compat_dist_$(suite)),$(call word-colon,2,$(f))))) \
+$(eval $(my_all_targets) : $(call copy-many-files, \
+  $(sort $(foreach suite,$(LOCAL_COMPATIBILITY_SUITE),$(my_compat_dist_$(suite))))))
 endef
+
+###########################################################
+## Path Cleaning
+###########################################################
+
+# Remove "dir .." combinations (but keep ".. ..")
+#
+# $(1): The expanded path, where / is converted to ' ' to work with $(word)
+define _clean-path-strip-dotdot
+$(strip \
+  $(if $(word 2,$(1)),
+    $(if $(call streq,$(word 2,$(1)),..),
+      $(if $(call streq,$(word 1,$(1)),..),
+        $(word 1,$(1)) $(call _clean-path-strip-dotdot,$(wordlist 2,$(words $(1)),$(1)))
+      ,
+        $(call _clean-path-strip-dotdot,$(wordlist 3,$(words $(1)),$(1)))
+      )
+    ,
+      $(word 1,$(1)) $(call _clean-path-strip-dotdot,$(wordlist 2,$(words $(1)),$(1)))
+    )
+  ,
+    $(1)
+  )
+)
+endef
+
+# Remove any leading .. from the path (in case of /..)
+#
+# Should only be called if the original path started with /
+# $(1): The expanded path, where / is converted to ' ' to work with $(word)
+define _clean-path-strip-root-dotdots
+$(strip $(if $(call streq,$(firstword $(1)),..),
+  $(call _clean-path-strip-root-dotdots,$(wordlist 2,$(words $(1)),$(1))),
+  $(1)))
+endef
+
+# Call _clean-path-strip-dotdot until the path stops changing
+# $(1): Non-empty if this path started with a /
+# $(2): The expanded path, where / is converted to ' ' to work with $(word)
+define _clean-path-expanded
+$(strip \
+  $(eval _ep := $(call _clean-path-strip-dotdot,$(2)))
+  $(if $(1),$(eval _ep := $(call _clean-path-strip-root-dotdots,$(_ep))))
+  $(if $(call streq,$(2),$(_ep)),
+    $(_ep),
+    $(call _clean-path-expanded,$(1),$(_ep))))
+endef
+
+# Clean the file path -- remove //, dir/.., extra .
+#
+# This should be the same semantics as golang's filepath.Clean
+#
+# $(1): The file path to clean
+define clean-path
+$(strip \
+  $(if $(call streq,$(words $(1)),1),
+    $(eval _rooted := $(filter /%,$(1)))
+    $(eval _expanded_path := $(filter-out .,$(subst /,$(space),$(1))))
+    $(eval _path := $(if $(_rooted),/)$(subst $(space),/,$(call _clean-path-expanded,$(_rooted),$(_expanded_path))))
+    $(if $(_path),
+      $(_path),
+      .
+     )
+  ,
+    $(if $(call streq,$(words $(1)),0),
+      .,
+      $(error Call clean-path with only one path (without spaces))
+    )
+  )
+)
+endef
+
+ifeq ($(TEST_MAKE_clean_path),true)
+  define my_test
+    $(if $(call streq,$(call clean-path,$(1)),$(2)),,
+      $(eval my_failed := true)
+      $(warning clean-path test '$(1)': expected '$(2)', got '$(call clean-path,$(1))'))
+  endef
+  my_failed :=
+
+  # Already clean
+  $(call my_test,abc,abc)
+  $(call my_test,abc/def,abc/def)
+  $(call my_test,a/b/c,a/b/c)
+  $(call my_test,.,.)
+  $(call my_test,..,..)
+  $(call my_test,../..,../..)
+  $(call my_test,../../abc,../../abc)
+  $(call my_test,/abc,/abc)
+  $(call my_test,/,/)
+
+  # Empty is current dir
+  $(call my_test,,.)
+
+  # Remove trailing slash
+  $(call my_test,abc/,abc)
+  $(call my_test,abc/def/,abc/def)
+  $(call my_test,a/b/c/,a/b/c)
+  $(call my_test,./,.)
+  $(call my_test,../,..)
+  $(call my_test,../../,../..)
+  $(call my_test,/abc/,/abc)
+
+  # Remove doubled slash
+  $(call my_test,abc//def//ghi,abc/def/ghi)
+  $(call my_test,//abc,/abc)
+  $(call my_test,///abc,/abc)
+  $(call my_test,//abc//,/abc)
+  $(call my_test,abc//,abc)
+
+  # Remove . elements
+  $(call my_test,abc/./def,abc/def)
+  $(call my_test,/./abc/def,/abc/def)
+  $(call my_test,abc/.,abc)
+
+  # Remove .. elements
+  $(call my_test,abc/def/ghi/../jkl,abc/def/jkl)
+  $(call my_test,abc/def/../ghi/../jkl,abc/jkl)
+  $(call my_test,abc/def/..,abc)
+  $(call my_test,abc/def/../..,.)
+  $(call my_test,/abc/def/../..,/)
+  $(call my_test,abc/def/../../..,..)
+  $(call my_test,/abc/def/../../..,/)
+  $(call my_test,abc/def/../../../ghi/jkl/../../../mno,../../mno)
+  $(call my_test,/../abc,/abc)
+
+  # Combinations
+  $(call my_test,abc/./../def,def)
+  $(call my_test,abc//./../def,def)
+  $(call my_test,abc/../../././../def,../../def)
+
+  ifdef my_failed
+    $(error failed clean-path test)
+  endif
+endif
 
 ###########################################################
 ## Other includes

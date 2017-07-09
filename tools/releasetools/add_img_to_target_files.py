@@ -69,6 +69,7 @@ OPTIONS = common.OPTIONS
 
 OPTIONS.add_missing = False
 OPTIONS.rebuild_recovery = False
+OPTIONS.replace_recovery_patch_files_list = []
 OPTIONS.replace_verity_public_key = False
 OPTIONS.replace_verity_private_key = False
 OPTIONS.is_signing = False
@@ -127,6 +128,12 @@ def AddSystem(output_zip, prefix="IMAGES/", recovery_img=None, boot_img=None):
     ofile.write(data)
     ofile.close()
 
+    arc_name = "SYSTEM/" + fn
+    if arc_name in output_zip.namelist():
+      OPTIONS.replace_recovery_patch_files_list.append(arc_name)
+    else:
+      common.ZipWrite(output_zip, ofile.name, arc_name)
+
   if OPTIONS.rebuild_recovery:
     print("Building new recovery patch")
     common.MakeRecoveryPatch(OPTIONS.input_tmp, output_sink, recovery_img,
@@ -166,6 +173,13 @@ def AddVendor(output_zip, prefix="IMAGES/"):
               block_list=block_list)
   return img.name
 
+def FindDtboPrebuilt(prefix="IMAGES/"):
+  """Find the prebuilt image of DTBO partition."""
+
+  prebuilt_path = os.path.join(OPTIONS.input_tmp, prefix, "dtbo.img")
+  if os.path.exists(prebuilt_path):
+    return prebuilt_path
+  return None
 
 def CreateImage(input_dir, info_dict, what, output_file, block_list=None):
   print("creating " + what + ".img...")
@@ -286,7 +300,7 @@ def AddUserdata(output_zip, prefix="IMAGES/"):
 
 
 def AddVBMeta(output_zip, boot_img_path, system_img_path, vendor_img_path,
-              prefix="IMAGES/"):
+              dtbo_img_path, prefix="IMAGES/"):
   """Create a VBMeta image and store it in output_zip."""
   img = OutputFile(output_zip, OPTIONS.input_tmp, prefix, "vbmeta.img")
   avbtool = os.getenv('AVBTOOL') or "avbtool"
@@ -296,6 +310,8 @@ def AddVBMeta(output_zip, boot_img_path, system_img_path, vendor_img_path,
          "--include_descriptors_from_image", system_img_path]
   if vendor_img_path is not None:
     cmd.extend(["--include_descriptors_from_image", vendor_img_path])
+  if dtbo_img_path is not None:
+    cmd.extend(["--include_descriptors_from_image", dtbo_img_path])
   if OPTIONS.info_dict.get("system_root_image", None) == "true":
     cmd.extend(["--setup_rootfs_from_kernel", system_img_path])
   common.AppendAVBSigningArgs(cmd)
@@ -374,6 +390,23 @@ def AddCache(output_zip, prefix="IMAGES/"):
 
   common.CheckSize(img.name, "cache.img", OPTIONS.info_dict)
   img.Write()
+
+
+def ReplaceRecoveryPatchFiles(zip_filename):
+  """Update the related files under SYSTEM/ after rebuilding recovery."""
+
+  cmd = ["zip", "-d", zip_filename] + OPTIONS.replace_recovery_patch_files_list
+  p = common.Run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+  p.communicate()
+
+  output_zip = zipfile.ZipFile(zip_filename, "a",
+                               compression=zipfile.ZIP_DEFLATED,
+                               allowZip64=True)
+  for item in OPTIONS.replace_recovery_patch_files_list:
+    file_path = os.path.join(OPTIONS.input_tmp, item)
+    assert os.path.exists(file_path)
+    common.ZipWrite(output_zip, file_path, arcname=item)
+  common.ZipClose(output_zip)
 
 
 def AddImagesToTargetFiles(filename):
@@ -481,7 +514,9 @@ def AddImagesToTargetFiles(filename):
   if OPTIONS.info_dict.get("board_avb_enable", None) == "true":
     banner("vbmeta")
     boot_contents = boot_image.WriteToTemp()
-    AddVBMeta(output_zip, boot_contents.name, system_img_path, vendor_img_path)
+    dtbo_img_path = FindDtboPrebuilt()
+    AddVBMeta(output_zip, boot_contents.name, system_img_path,
+              vendor_img_path, dtbo_img_path)
 
   # For devices using A/B update, copy over images from RADIO/ and/or
   # VENDOR_IMAGES/ to IMAGES/ and make sure we have all the needed
@@ -547,6 +582,9 @@ def AddImagesToTargetFiles(filename):
 
   if output_zip:
     common.ZipClose(output_zip)
+    if OPTIONS.replace_recovery_patch_files_list:
+      ReplaceRecoveryPatchFiles(output_zip.filename)
+
 
 def main(argv):
   def option_handler(o, a):
